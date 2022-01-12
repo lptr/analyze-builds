@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
@@ -14,7 +16,6 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.checkerframework.checker.units.qual.C;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,13 +23,14 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
 
 import static java.time.Instant.now;
 
@@ -41,7 +43,7 @@ public final class ExportApiJavaExample {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        Instant since = now().minus(Duration.ofMinutes(5));
+        Instant since = now().minus(Duration.ofMinutes(300));
 
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
@@ -60,7 +62,7 @@ public final class ExportApiJavaExample {
         eventSourceFactory.newEventSource(requestBuilds(since), listener);
         BuildStatistics result = listener.getResult().get();
 
-        System.out.println("Results:");
+        result.print();
 
         // Cleanly shuts down the HTTP client, which speeds up process termination
         shutdown(httpClient);
@@ -76,7 +78,7 @@ public final class ExportApiJavaExample {
     @NotNull
     private static Request requestBuildEvents(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,TaskStarted,TaskFinished"))
                 .build();
     }
 
@@ -124,14 +126,17 @@ public final class ExportApiJavaExample {
                             throw new RuntimeException(e);
                         }
                     })
-                    .reduce((a, b) -> a)
+                    .reduce(BuildStatistics::merge)
                     .get());
         }
     }
 
     private static class ProcessBuild extends PrintFailuresEventSourceListener {
         private final String buildId;
+        private final SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
+        private final List<String> rootProjects = new ArrayList<>();
+        private final List<String> tags = new ArrayList<>();
 
         private ProcessBuild(String buildId) {
             this.buildId = buildId;
@@ -148,9 +153,32 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
-            System.out.println("Event: " + type + " - " + data);
+            // System.out.println("Event: " + type + " - " + data);
             if (type.equals("BuildEvent")) {
                 JsonNode eventJson = parse(data);
+                long timestamp = eventJson.get("timestamp").asLong();
+                String eventType = eventJson.get("type").get("eventType").asText();
+                int delta;
+                switch (eventType) {
+                    case "ProjectStructure":
+                        String rootProject = eventJson.get("data").get("rootProjectName").asText();
+//                        System.out.println("Found root project " + rootProject);
+                        rootProjects.add(rootProject);
+                        break;
+                    case "UserTag":
+                        String tag = eventJson.get("data").get("tag").asText();
+//                        System.out.println("Found tag " + tag);
+                        tags.add(tag);
+                        break;
+                    case "TaskStarted":
+                        startStopEvents.compute(timestamp, (key, value) -> nullToZero(value) + 1);
+                        break;
+                    case "TaskFinished":
+                        startStopEvents.compute(timestamp, (key, value) -> nullToZero(value) - 1);
+                        break;
+                    default:
+                        throw new AssertionError("Unknown event type: " + eventType);
+                }
 
             }
         }
@@ -158,8 +186,35 @@ public final class ExportApiJavaExample {
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
             System.out.println("Finished processing build " + buildId);
-            result.complete(new BuildStatistics());
+            BuildStatistics stats;
+            if (!rootProjects.contains("gradle")) {
+                System.out.println("Couldn't find 'gradle' among root projects, skipping");
+                stats = BuildStatistics.EMPTY;
+            } else if (!tags.contains("LOCAL")) {
+                System.out.println("Local tag not found, skipping");
+                stats = BuildStatistics.EMPTY;
+            } else {
+                int concurrencyLevel = 0;
+                long lastTimeStamp = 0;
+                SortedMap<Integer, Long> histogram = new TreeMap<>();
+                for (Map.Entry<Long, Integer> entry : startStopEvents.entrySet()) {
+                    long timestamp = entry.getKey();
+                    int delta = entry.getValue();
+                    if (concurrencyLevel != 0) {
+                        long duration = timestamp - lastTimeStamp;
+                        histogram.compute(concurrencyLevel, (concurrency, recordedDuration) -> (recordedDuration == null ? 0 : recordedDuration) + duration);
+                    }
+                    concurrencyLevel += delta;
+                    lastTimeStamp = timestamp;
+                }
+                stats = new BuildStatistics(1, ImmutableSortedMap.copyOfSorted(histogram));
+            }
+            result.complete(stats);
         }
+    }
+
+    private static int nullToZero(Integer value) {
+        return value == null ? 0 : value;
     }
 
     private static class PrintFailuresEventSourceListener extends EventSourceListener {
@@ -200,5 +255,34 @@ public final class ExportApiJavaExample {
     }
 
     private static class BuildStatistics {
+        public static final BuildStatistics EMPTY = new BuildStatistics(0, ImmutableSortedMap.of());
+
+        private int buildCount;
+        private ImmutableSortedMap<Integer, Long> histogram;
+
+        public BuildStatistics(int buildCount, ImmutableSortedMap<Integer, Long> histogram) {
+            this.buildCount = buildCount;
+            this.histogram = histogram;
+        }
+
+        public void print() {
+            if (histogram.isEmpty()) {
+                System.out.println("No matching builds found");
+                return;
+            }
+            System.out.println("Statistics for " + buildCount + " builds");
+            int maxConcurrencyLevel = histogram.lastKey();
+            for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
+                System.out.println(concurrencyLevel + ": " + histogram.getOrDefault(concurrencyLevel, 0L) + " ms");
+            }
+        }
+
+        public static BuildStatistics merge(BuildStatistics a, BuildStatistics b) {
+            ImmutableSortedMap.Builder<Integer, Long> merged = ImmutableSortedMap.naturalOrder();
+            for (Integer concurrencyLevel : Sets.union(a.histogram.keySet(), b.histogram.keySet())) {
+                merged.put(concurrencyLevel, a.histogram.getOrDefault(concurrencyLevel, 0L) + b.histogram.getOrDefault(concurrencyLevel, 0L));
+            }
+            return new BuildStatistics(a.buildCount + b.buildCount, merged.build());
+        }
     }
 }
