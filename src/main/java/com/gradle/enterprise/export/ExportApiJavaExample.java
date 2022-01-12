@@ -286,7 +286,9 @@ public final class ExportApiJavaExample {
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
             tasks.values().stream()
-                    .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
+                    .filter(task -> !task.type.equals("gradlebuild.integrationtests.tasks.IntegrationTest")
+                            && !task.type.equals("org.gradle.api.tasks.testing.Test")
+                            && (task.outcome.equals("success") || task.outcome.equals("failed")))
                     .forEach(task -> {
                         taskCount.incrementAndGet();
                         startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
