@@ -76,14 +76,21 @@ public final class ExportApiJavaExample {
     }
 
     @NotNull
+    private static Request requestBuildInfo(String buildId) {
+        return new Request.Builder()
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag"))
+                .build();
+    }
+
+    @NotNull
     private static Request requestBuildEvents(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,TaskStarted,TaskFinished"))
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
                 .build();
     }
 
     private static class QueryBuilds extends PrintFailuresEventSourceListener {
-        private final List<CompletableFuture<BuildStatistics>> buildsBeingProcessed = new ArrayList<>();
+        private final List<CompletableFuture<FilterBuild.Result>> builds = new ArrayList<>();
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final EventSource.Factory eventSourceFactory;
 
@@ -108,35 +115,118 @@ public final class ExportApiJavaExample {
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
                 final String buildId = json.get("buildId").asText();
 
-                Request request = requestBuildEvents(buildId);
-
-                ProcessBuild listener = new ProcessBuild(buildId);
+                Request request = requestBuildInfo(buildId);
+                FilterBuild listener = new FilterBuild(buildId);
                 eventSourceFactory.newEventSource(request, listener);
-                buildsBeingProcessed.add(listener.getResult());
+                builds.add(listener.getResult());
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
-            result.complete(buildsBeingProcessed.stream()
+            BuildStatistics stats = builds.stream()
+                    .map((CompletableFuture<FilterBuild.Result> build) -> build.thenCompose(this::getBuildInfo))
+                    .reduce((left, right) -> left.thenCombine(right, BuildStatistics::merge))
                     .map(result -> {
                         try {
-                            return result.get(5, TimeUnit.SECONDS);
-                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                            return result.get(20, TimeUnit.SECONDS);
+                        } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
                     })
-                    .reduce(BuildStatistics::merge)
-                    .get());
+                    .orElse(BuildStatistics.EMPTY);
+            result.complete(stats);
+        }
+
+        private CompletableFuture<BuildStatistics> getBuildInfo(FilterBuild.Result result) {
+            if (result.matches) {
+                Request request = requestBuildEvents(result.buildId);
+                ProcessBuild listener = new ProcessBuild(result.buildId);
+                eventSourceFactory.newEventSource(request, listener);
+                return listener.getResult();
+            } else {
+                return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
+            }
         }
     }
+
+    private static class FilterBuild extends PrintFailuresEventSourceListener {
+        public static class Result {
+            public final String buildId;
+            public final boolean matches;
+
+            public Result(String buildId, boolean matches) {
+                this.buildId = buildId;
+                this.matches = matches;
+            }
+        }
+
+        private final String buildId;
+        private final CompletableFuture<Result> result = new CompletableFuture<>();
+        private final List<String> rootProjects = new ArrayList<>();
+        private final List<String> tags = new ArrayList<>();
+
+        private FilterBuild(String buildId) {
+            this.buildId = buildId;
+        }
+
+        public CompletableFuture<Result> getResult() {
+            return result;
+        }
+
+        @Override
+        public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
+            System.out.println("Filtering : " + buildId);
+        }
+
+        @Override
+        public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
+            // System.out.println("Event: " + type + " - " + data);
+            if (type.equals("BuildEvent")) {
+                JsonNode eventJson = parse(data);
+                long timestamp = eventJson.get("timestamp").asLong();
+                String eventType = eventJson.get("type").get("eventType").asText();
+                int delta;
+                switch (eventType) {
+                    case "ProjectStructure":
+                        String rootProject = eventJson.get("data").get("rootProjectName").asText();
+//                        System.out.println("Found root project " + rootProject);
+                        rootProjects.add(rootProject);
+                        break;
+                    case "UserTag":
+                        String tag = eventJson.get("data").get("tag").asText();
+//                        System.out.println("Found tag " + tag);
+                        tags.add(tag);
+                        break;
+                    default:
+                        throw new AssertionError("Unknown event type: " + eventType);
+                }
+
+            }
+        }
+
+        @Override
+        public void onClosed(@NotNull EventSource eventSource) {
+            boolean matches;
+            BuildStatistics stats;
+            if (!rootProjects.contains("gradle")) {
+                System.out.println("Couldn't find 'gradle' among root projects, skipping");
+                matches = false;
+            } else if (!tags.contains("LOCAL")) {
+                System.out.println("Local tag not found, skipping");
+                matches = false;
+            } else {
+                matches = true;
+            }
+            result.complete(new Result(buildId, matches));
+        }
+    }
+
 
     private static class ProcessBuild extends PrintFailuresEventSourceListener {
         private final String buildId;
         private final SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
-        private final List<String> rootProjects = new ArrayList<>();
-        private final List<String> tags = new ArrayList<>();
 
         private ProcessBuild(String buildId) {
             this.buildId = buildId;
@@ -160,16 +250,6 @@ public final class ExportApiJavaExample {
                 String eventType = eventJson.get("type").get("eventType").asText();
                 int delta;
                 switch (eventType) {
-                    case "ProjectStructure":
-                        String rootProject = eventJson.get("data").get("rootProjectName").asText();
-//                        System.out.println("Found root project " + rootProject);
-                        rootProjects.add(rootProject);
-                        break;
-                    case "UserTag":
-                        String tag = eventJson.get("data").get("tag").asText();
-//                        System.out.println("Found tag " + tag);
-                        tags.add(tag);
-                        break;
                     case "TaskStarted":
                         startStopEvents.compute(timestamp, (key, value) -> nullToZero(value) + 1);
                         break;
@@ -185,31 +265,20 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
-            System.out.println("Finished processing build " + buildId);
-            BuildStatistics stats;
-            if (!rootProjects.contains("gradle")) {
-                System.out.println("Couldn't find 'gradle' among root projects, skipping");
-                stats = BuildStatistics.EMPTY;
-            } else if (!tags.contains("LOCAL")) {
-                System.out.println("Local tag not found, skipping");
-                stats = BuildStatistics.EMPTY;
-            } else {
-                int concurrencyLevel = 0;
-                long lastTimeStamp = 0;
-                SortedMap<Integer, Long> histogram = new TreeMap<>();
-                for (Map.Entry<Long, Integer> entry : startStopEvents.entrySet()) {
-                    long timestamp = entry.getKey();
-                    int delta = entry.getValue();
-                    if (concurrencyLevel != 0) {
-                        long duration = timestamp - lastTimeStamp;
-                        histogram.compute(concurrencyLevel, (concurrency, recordedDuration) -> (recordedDuration == null ? 0 : recordedDuration) + duration);
-                    }
-                    concurrencyLevel += delta;
-                    lastTimeStamp = timestamp;
+            int concurrencyLevel = 0;
+            long lastTimeStamp = 0;
+            SortedMap<Integer, Long> histogram = new TreeMap<>();
+            for (Map.Entry<Long, Integer> entry : startStopEvents.entrySet()) {
+                long timestamp = entry.getKey();
+                int delta = entry.getValue();
+                if (concurrencyLevel != 0) {
+                    long duration = timestamp - lastTimeStamp;
+                    histogram.compute(concurrencyLevel, (concurrency, recordedDuration) -> (recordedDuration == null ? 0 : recordedDuration) + duration);
                 }
-                stats = new BuildStatistics(1, ImmutableSortedMap.copyOfSorted(histogram));
+                concurrencyLevel += delta;
+                lastTimeStamp = timestamp;
             }
-            result.complete(stats);
+            result.complete(new BuildStatistics(1, ImmutableSortedMap.copyOfSorted(histogram)));
         }
     }
 
