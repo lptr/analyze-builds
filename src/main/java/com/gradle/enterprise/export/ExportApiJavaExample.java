@@ -28,12 +28,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import static java.time.Instant.now;
 
@@ -42,6 +42,7 @@ public final class ExportApiJavaExample {
     private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://ge.gradle.org");
     private static final String EXPORT_API_ACCESS_KEY = System.getenv("EXPORT_API_ACCESS_KEY");
     private static final int MAX_BUILD_SCANS_STREAMED_CONCURRENTLY = 30;
+    private static final String FINISHED = "FINISHED";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -60,10 +61,40 @@ public final class ExportApiJavaExample {
         httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        QueryBuilds listener = new QueryBuilds(eventSourceFactory);
-
-        eventSourceFactory.newEventSource(requestBuilds(since), listener);
-        BuildStatistics result = listener.getResult().get();
+        BlockingQueue<String> buildQueue = new ArrayBlockingQueue<>(128);
+        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
+        eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
+        BuildStatistics result = Stream.generate(() -> {
+                    try {
+                        return buildQueue.take();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                })
+                .takeWhile(buildId -> buildId != FINISHED)
+                .map(buildId -> {
+                    FilterBuildByProjectAndTags projectFilter = new FilterBuildByProjectAndTags(buildId);
+                    eventSourceFactory.newEventSource(requestBuildInfo(buildId), projectFilter);
+                    return projectFilter.getResult();
+                })
+                .map(future -> future.thenCompose(filterResult -> {
+                    if (filterResult.matches) {
+                        ProcessBuild buildProcessor = new ProcessBuild(filterResult.buildId);
+                        eventSourceFactory.newEventSource(requestBuildEvents(filterResult.buildId), buildProcessor);
+                        return buildProcessor.getResult();
+                    } else {
+                        return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
+                    }
+                }))
+                .map(statsResult -> {
+                    try {
+                        return statsResult.get(1, TimeUnit.HOURS);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                })
+                .reduce(BuildStatistics::merge)
+                .orElse(BuildStatistics.EMPTY);
 
         result.print();
 
@@ -92,17 +123,13 @@ public final class ExportApiJavaExample {
                 .build();
     }
 
-    private static class QueryBuilds extends PrintFailuresEventSourceListener {
-        private final List<CompletableFuture<BuildStatistics>> builds = new ArrayList<>();
-        private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
+    private static class FilterBuildsByBuildTool extends PrintFailuresEventSourceListener {
         private final EventSource.Factory eventSourceFactory;
+        private final BlockingQueue<String> buildQueue;
 
-        private QueryBuilds(EventSource.Factory eventSourceFactory) {
+        private FilterBuildsByBuildTool(EventSource.Factory eventSourceFactory, BlockingQueue<String> buildQueue) {
             this.eventSourceFactory = eventSourceFactory;
-        }
-
-        public CompletableFuture<BuildStatistics> getResult() {
-            return result;
+            this.buildQueue = buildQueue;
         }
 
         @Override
@@ -115,45 +142,27 @@ public final class ExportApiJavaExample {
             JsonNode json = parse(data);
             JsonNode buildToolJson = json.get("toolType");
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
-                final String buildId = json.get("buildId").asText();
-
-                Request request = requestBuildInfo(buildId);
-                FilterBuild listener = new FilterBuild(buildId);
-                eventSourceFactory.newEventSource(request, listener);
-                builds.add(listener.getResult()
-                        .thenCompose(this::getBuildInfo));
+                String buildId = json.get("buildId").asText();
+                try {
+                    buildQueue.put(buildId);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
-            System.out.println("Found " + builds.size() + " builds, collecting data");
-            BuildStatistics stats = builds.stream()
-                    .map(result -> {
-                        try {
-                            return result.get(1, TimeUnit.HOURS);
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    })
-                    .reduce(BuildStatistics::merge)
-                    .orElse(BuildStatistics.EMPTY);
-            result.complete(stats);
-        }
-
-        private CompletableFuture<BuildStatistics> getBuildInfo(FilterBuild.Result result) {
-            if (result.matches) {
-                Request request = requestBuildEvents(result.buildId);
-                ProcessBuild listener = new ProcessBuild(result.buildId);
-                eventSourceFactory.newEventSource(request, listener);
-                return listener.getResult();
-            } else {
-                return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
+            System.out.println("Finished querying builds");
+            try {
+                buildQueue.put(FINISHED);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
         }
     }
 
-    private static class FilterBuild extends PrintFailuresEventSourceListener {
+    private static class FilterBuildByProjectAndTags extends PrintFailuresEventSourceListener {
         public static class Result {
             public final String buildId;
             public final boolean matches;
@@ -169,7 +178,7 @@ public final class ExportApiJavaExample {
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
 
-        private FilterBuild(String buildId) {
+        private FilterBuildByProjectAndTags(String buildId) {
             this.buildId = buildId;
         }
 
