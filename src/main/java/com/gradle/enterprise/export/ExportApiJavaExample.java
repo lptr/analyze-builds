@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
@@ -28,9 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -42,7 +43,6 @@ public final class ExportApiJavaExample {
     private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://ge.gradle.org");
     private static final String EXPORT_API_ACCESS_KEY = System.getenv("EXPORT_API_ACCESS_KEY");
     private static final int MAX_BUILD_SCANS_STREAMED_CONCURRENTLY = 30;
-    private static final String FINISHED = "FINISHED";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -61,17 +61,10 @@ public final class ExportApiJavaExample {
         httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        BlockingQueue<String> buildQueue = new ArrayBlockingQueue<>(128);
+        StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
         FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
         eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
-        BuildStatistics result = Stream.generate(() -> {
-                    try {
-                        return buildQueue.take();
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
-                })
-                .takeWhile(buildId -> buildId != FINISHED)
+        BuildStatistics result = buildQueue.stream()
                 .parallel()
                 .map(buildId -> {
                     FilterBuildByProjectAndTags projectFilter = new FilterBuildByProjectAndTags(buildId);
@@ -126,9 +119,9 @@ public final class ExportApiJavaExample {
 
     private static class FilterBuildsByBuildTool extends PrintFailuresEventSourceListener {
         private final EventSource.Factory eventSourceFactory;
-        private final BlockingQueue<String> buildQueue;
+        private final StreamableQueue<String> buildQueue;
 
-        private FilterBuildsByBuildTool(EventSource.Factory eventSourceFactory, BlockingQueue<String> buildQueue) {
+        private FilterBuildsByBuildTool(EventSource.Factory eventSourceFactory, StreamableQueue<String> buildQueue) {
             this.eventSourceFactory = eventSourceFactory;
             this.buildQueue = buildQueue;
         }
@@ -156,7 +149,7 @@ public final class ExportApiJavaExample {
         public void onClosed(@NotNull EventSource eventSource) {
             System.out.println("Finished querying builds");
             try {
-                buildQueue.put(FINISHED);
+                buildQueue.close();
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
@@ -386,6 +379,41 @@ public final class ExportApiJavaExample {
                 merged.put(concurrencyLevel, a.histogram.getOrDefault(concurrencyLevel, 0L) + b.histogram.getOrDefault(concurrencyLevel, 0L));
             }
             return new BuildStatistics(a.buildCount + b.buildCount, a.taskCount + b.taskCount, merged.build());
+        }
+    }
+
+    private static class StreamableQueue<T> extends ForwardingBlockingQueue<T> {
+        private final BlockingQueue<T> delegate;
+        private final T poison;
+
+        public StreamableQueue(T poison) {
+            this.delegate = new LinkedBlockingQueue<>();
+            this.poison = poison;
+        }
+
+        @Override
+        protected BlockingQueue<T> delegate() {
+            return delegate;
+        }
+
+        public void close() throws InterruptedException {
+            put(poison);
+        }
+
+        @Override
+        public Stream<T> stream() {
+            return Stream.generate(() -> {
+                        try {
+                            T value = take();
+                            if (value == poison) {
+                                put(poison);
+                            }
+                            return value;
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .takeWhile(value -> value != poison);
         }
     }
 }
