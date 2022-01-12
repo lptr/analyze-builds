@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
@@ -31,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 
 import static java.time.Instant.now;
 
@@ -43,7 +45,7 @@ public final class ExportApiJavaExample {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        Instant since = now().minus(Duration.ofDays(7));
+        Instant since = now().minus(Duration.ofHours(2));
 
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
@@ -128,7 +130,7 @@ public final class ExportApiJavaExample {
             BuildStatistics stats = builds.stream()
                     .map(result -> {
                         try {
-                            return result.get(10, TimeUnit.MINUTES);
+                            return result.get(1, TimeUnit.HOURS);
                         } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
@@ -220,8 +222,19 @@ public final class ExportApiJavaExample {
 
     private static class ProcessBuild extends PrintFailuresEventSourceListener {
         private final String buildId;
-        private final SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
+        private final Map<Long, TaskInfo> tasks = new HashMap<>();
+
+        private static class TaskInfo {
+            public final String type;
+            public final long startTime;
+            public long finishTime;
+
+            public TaskInfo(String type, long startTime) {
+                this.type = type;
+                this.startTime = startTime;
+            }
+        }
 
         private ProcessBuild(String buildId) {
             this.buildId = buildId;
@@ -237,29 +250,39 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
-            // System.out.println("Event: " + type + " - " + data);
+            // System.out.println("Event: " + type + " !! " + id + " - " + data);
             if (type.equals("BuildEvent")) {
                 JsonNode eventJson = parse(data);
                 long timestamp = eventJson.get("timestamp").asLong();
                 String eventType = eventJson.get("type").get("eventType").asText();
+                long eventId = eventJson.get("data").get("id").asLong();
                 int delta;
                 switch (eventType) {
                     case "TaskStarted":
-                        startStopEvents.compute(timestamp, (key, value) -> nullToZero(value) + 1);
+                        tasks.put(eventId, new TaskInfo(
+                                eventJson.get("data").get("className").asText(),
+                                timestamp
+                        ));
                         break;
                     case "TaskFinished":
-                        startStopEvents.compute(timestamp, (key, value) -> nullToZero(value) - 1);
+                        tasks.get(eventId).finishTime = timestamp;
                         break;
                     default:
                         throw new AssertionError("Unknown event type: " + eventType);
                 }
-
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
             System.out.println("Finished processing build " + buildId);
+            SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
+            tasks.values().stream()
+                    .forEach(task -> {
+                        startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
+                        startStopEvents.compute(task.finishTime, (key, value) -> nullToZero(value) - 1);
+                    });
+
             int concurrencyLevel = 0;
             long lastTimeStamp = 0;
             SortedMap<Integer, Long> histogram = new TreeMap<>();
