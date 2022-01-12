@@ -72,6 +72,7 @@ public final class ExportApiJavaExample {
                     }
                 })
                 .takeWhile(buildId -> buildId != FINISHED)
+                .parallel()
                 .map(buildId -> {
                     FilterBuildByProjectAndTags projectFilter = new FilterBuildByProjectAndTags(buildId);
                     eventSourceFactory.newEventSource(requestBuildInfo(buildId), projectFilter);
