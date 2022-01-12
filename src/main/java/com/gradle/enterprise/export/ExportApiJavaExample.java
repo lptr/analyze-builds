@@ -43,7 +43,7 @@ public final class ExportApiJavaExample {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        Instant since = now().minus(Duration.ofMinutes(300));
+        Instant since = now().minus(Duration.ofDays(7));
 
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
@@ -90,7 +90,7 @@ public final class ExportApiJavaExample {
     }
 
     private static class QueryBuilds extends PrintFailuresEventSourceListener {
-        private final List<CompletableFuture<FilterBuild.Result>> builds = new ArrayList<>();
+        private final List<CompletableFuture<BuildStatistics>> builds = new ArrayList<>();
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final EventSource.Factory eventSourceFactory;
 
@@ -110,7 +110,6 @@ public final class ExportApiJavaExample {
         @Override
         public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
             JsonNode json = parse(data);
-            System.out.println("Found build " + json.get("buildId").asText() + " - " + data);
             JsonNode buildToolJson = json.get("toolType");
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
                 final String buildId = json.get("buildId").asText();
@@ -118,22 +117,23 @@ public final class ExportApiJavaExample {
                 Request request = requestBuildInfo(buildId);
                 FilterBuild listener = new FilterBuild(buildId);
                 eventSourceFactory.newEventSource(request, listener);
-                builds.add(listener.getResult());
+                builds.add(listener.getResult()
+                        .thenCompose(this::getBuildInfo));
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
+            System.out.println("Found " + builds.size() + " builds, collecting data");
             BuildStatistics stats = builds.stream()
-                    .map((CompletableFuture<FilterBuild.Result> build) -> build.thenCompose(this::getBuildInfo))
-                    .reduce((left, right) -> left.thenCombine(right, BuildStatistics::merge))
                     .map(result -> {
                         try {
-                            return result.get(20, TimeUnit.SECONDS);
+                            return result.get(10, TimeUnit.MINUTES);
                         } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
                     })
+                    .reduce(BuildStatistics::merge)
                     .orElse(BuildStatistics.EMPTY);
             result.complete(stats);
         }
@@ -176,7 +176,6 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
-            System.out.println("Filtering : " + buildId);
         }
 
         @Override
@@ -190,12 +189,10 @@ public final class ExportApiJavaExample {
                 switch (eventType) {
                     case "ProjectStructure":
                         String rootProject = eventJson.get("data").get("rootProjectName").asText();
-//                        System.out.println("Found root project " + rootProject);
                         rootProjects.add(rootProject);
                         break;
                     case "UserTag":
                         String tag = eventJson.get("data").get("tag").asText();
-//                        System.out.println("Found tag " + tag);
                         tags.add(tag);
                         break;
                     default:
@@ -210,18 +207,16 @@ public final class ExportApiJavaExample {
             boolean matches;
             BuildStatistics stats;
             if (!rootProjects.contains("gradle")) {
-                System.out.println("Couldn't find 'gradle' among root projects, skipping");
                 matches = false;
             } else if (!tags.contains("LOCAL")) {
-                System.out.println("Local tag not found, skipping");
                 matches = false;
             } else {
+                System.out.println("Found build " + buildId);
                 matches = true;
             }
             result.complete(new Result(buildId, matches));
         }
     }
-
 
     private static class ProcessBuild extends PrintFailuresEventSourceListener {
         private final String buildId;
@@ -238,7 +233,6 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
-            System.out.println("Streaming events for : " + buildId);
         }
 
         @Override
@@ -265,6 +259,7 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
+            System.out.println("Finished processing build " + buildId);
             int concurrencyLevel = 0;
             long lastTimeStamp = 0;
             SortedMap<Integer, Long> histogram = new TreeMap<>();
