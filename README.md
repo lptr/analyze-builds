@@ -1,6 +1,7 @@
-# Export API Java Example
+# Gradle Export API Parallelism extractor
 
-This Java example aggregates and counts builds from the last 24 hours by username.
+Looks for local builds and tries to determine how parallel they are runnig.
+The output shows how much time we spent runing on 1, 2, 3 etc. threads in parallel.
 
 ## Minimum Gradle Enterprise version
 
