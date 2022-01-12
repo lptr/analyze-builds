@@ -233,6 +233,7 @@ public final class ExportApiJavaExample {
             public final String type;
             public final long startTime;
             public long finishTime;
+            public String outcome;
 
             public TaskInfo(String type, long startTime) {
                 this.type = type;
@@ -269,7 +270,9 @@ public final class ExportApiJavaExample {
                         ));
                         break;
                     case "TaskFinished":
-                        tasks.get(eventId).finishTime = timestamp;
+                        TaskInfo task = tasks.get(eventId);
+                        task.finishTime = timestamp;
+                        task.outcome = eventJson.get("data").get("outcome").asText();
                         break;
                     default:
                         throw new AssertionError("Unknown event type: " + eventType);
@@ -283,7 +286,7 @@ public final class ExportApiJavaExample {
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
             tasks.values().stream()
-                    .filter(task -> !task.type.equals("org.gradle.api.tasks.testing.Test"))
+                    .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
                         taskCount.incrementAndGet();
                         startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
