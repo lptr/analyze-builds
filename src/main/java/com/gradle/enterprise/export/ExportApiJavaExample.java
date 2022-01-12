@@ -32,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import static java.time.Instant.now;
@@ -45,7 +46,7 @@ public final class ExportApiJavaExample {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        Instant since = now().minus(Duration.ofHours(2));
+        Instant since = now().minus(Duration.ofDays(7));
 
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
@@ -277,8 +278,11 @@ public final class ExportApiJavaExample {
         public void onClosed(@NotNull EventSource eventSource) {
             System.out.println("Finished processing build " + buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
+            AtomicInteger taskCount = new AtomicInteger(0);
             tasks.values().stream()
+                    .filter(task -> !task.type.equals("org.gradle.api.tasks.testing.Test"))
                     .forEach(task -> {
+                        taskCount.incrementAndGet();
                         startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
                         startStopEvents.compute(task.finishTime, (key, value) -> nullToZero(value) - 1);
                     });
@@ -296,7 +300,7 @@ public final class ExportApiJavaExample {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new BuildStatistics(1, ImmutableSortedMap.copyOfSorted(histogram)));
+            result.complete(new BuildStatistics(1, taskCount.get(), ImmutableSortedMap.copyOfSorted(histogram)));
         }
     }
 
@@ -342,13 +346,15 @@ public final class ExportApiJavaExample {
     }
 
     private static class BuildStatistics {
-        public static final BuildStatistics EMPTY = new BuildStatistics(0, ImmutableSortedMap.of());
+        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of());
 
-        private int buildCount;
-        private ImmutableSortedMap<Integer, Long> histogram;
+        private final int buildCount;
+        private final int taskCount;
+        private final ImmutableSortedMap<Integer, Long> histogram;
 
-        public BuildStatistics(int buildCount, ImmutableSortedMap<Integer, Long> histogram) {
+        public BuildStatistics(int buildCount, int taskCount, ImmutableSortedMap<Integer, Long> histogram) {
             this.buildCount = buildCount;
+            this.taskCount = taskCount;
             this.histogram = histogram;
         }
 
@@ -357,7 +363,7 @@ public final class ExportApiJavaExample {
                 System.out.println("No matching builds found");
                 return;
             }
-            System.out.println("Statistics for " + buildCount + " builds");
+            System.out.println("Statistics for " + buildCount + " builds with " + taskCount + " tasks");
             int maxConcurrencyLevel = histogram.lastKey();
             for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
                 System.out.println(concurrencyLevel + ": " + histogram.getOrDefault(concurrencyLevel, 0L) + " ms");
@@ -369,7 +375,7 @@ public final class ExportApiJavaExample {
             for (Integer concurrencyLevel : Sets.union(a.histogram.keySet(), b.histogram.keySet())) {
                 merged.put(concurrencyLevel, a.histogram.getOrDefault(concurrencyLevel, 0L) + b.histogram.getOrDefault(concurrencyLevel, 0L));
             }
-            return new BuildStatistics(a.buildCount + b.buildCount, merged.build());
+            return new BuildStatistics(a.buildCount + b.buildCount, a.taskCount + b.taskCount, merged.build());
         }
     }
 }
