@@ -14,6 +14,7 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
+import org.checkerframework.checker.units.qual.C;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,104 +22,75 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import static java.time.Instant.now;
 
 public final class ExportApiJavaExample {
 
-    private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://gradle.my-company.com");
-    private static final String EXPORT_API_USERNAME = System.getenv("EXPORT_API_USER");
-    private static final String EXPORT_API_PASSWORD = System.getenv("EXPORT_API_PASWORD");
+    private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://ge.gradle.org");
     private static final String EXPORT_API_ACCESS_KEY = System.getenv("EXPORT_API_ACCESS_KEY");
     private static final int MAX_BUILD_SCANS_STREAMED_CONCURRENTLY = 30;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private enum BuildTool {
-        GRADLE("BuildAgent", json -> json.get("data").get("username").asText()),
-        MAVEN("MvnBuildAgent", json -> json.get("data").get("username").asText())
-        ;
-
-        private final String buildAgentEvent;
-        private final Function<JsonNode, String> extractUsername;
-
-        BuildTool(String buildAgentEvent, Function<JsonNode, String> extractUsername) {
-            this.buildAgentEvent = buildAgentEvent;
-            this.extractUsername = extractUsername;
-        }
-
-        public String getBuildAgentEvent() {
-            return buildAgentEvent;
-        }
-
-        public Function<JsonNode, String> getExtractUsername() {
-            return extractUsername;
-        }
-    }
-
     public static void main(String[] args) throws Exception {
-        Instant since1Day = now().minus(Duration.ofHours(24));
+        Instant since = now().minus(Duration.ofMinutes(5));
 
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
                 .retryOnConnectionFailure(true)
                 .connectionPool(new ConnectionPool(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY, 30, TimeUnit.SECONDS))
-                .authenticator(Authenticators.bearerTokenOrBasic(EXPORT_API_ACCESS_KEY, EXPORT_API_USERNAME, EXPORT_API_PASSWORD))
+                .authenticator(Authenticators.bearerToken(EXPORT_API_ACCESS_KEY))
                 .protocols(ImmutableList.of(Protocol.HTTP_1_1))
                 .build();
         httpClient.dispatcher().setMaxRequests(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
         httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        ExtractUsernamesFromBuilds listener = new ExtractUsernamesFromBuilds(eventSourceFactory);
+        QueryBuilds listener = new QueryBuilds(eventSourceFactory);
 
-        eventSourceFactory.newEventSource(requestBuilds(since1Day), listener);
-        List<String> usernames = listener.getUsernames().get();
+        eventSourceFactory.newEventSource(requestBuilds(since), listener);
+        BuildStatistics result = listener.getResult().get();
 
-        List<String> results = usernames.stream()
-                .collect(Collectors.groupingBy(username -> username, Collectors.counting()))
-                .entrySet().stream()
-                .map(e -> e.getKey() + ": " + e.getValue())
-                .sorted()
-                .collect(Collectors.toList());
-        System.out.println("Results: " + results);
+        System.out.println("Results:");
 
         // Cleanly shuts down the HTTP client, which speeds up process termination
         shutdown(httpClient);
     }
 
     @NotNull
-    private static Request requestBuilds(Instant since1Day) {
+    private static Request requestBuilds(Instant since) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/builds/since/" + since1Day.toEpochMilli()))
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
                 .build();
     }
 
     @NotNull
-    private static Request requestBuildEvents(BuildTool buildTool, String buildId) {
+    private static Request requestBuildEvents(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=" + buildTool.getBuildAgentEvent()))
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
                 .build();
     }
 
-    private static class ExtractUsernamesFromBuilds extends PrintFailuresEventSourceListener {
-        private final List<CompletableFuture<String>> candidateUsernames = new ArrayList<>();
-        private final CompletableFuture<List<String>> usernames = new CompletableFuture<>();
+    private static class QueryBuilds extends PrintFailuresEventSourceListener {
+        private final List<CompletableFuture<BuildStatistics>> buildsBeingProcessed = new ArrayList<>();
+        private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final EventSource.Factory eventSourceFactory;
 
-        private ExtractUsernamesFromBuilds(EventSource.Factory eventSourceFactory) {
+        private QueryBuilds(EventSource.Factory eventSourceFactory) {
             this.eventSourceFactory = eventSourceFactory;
         }
 
-        public CompletableFuture<List<String>> getUsernames() {
-            return usernames;
+        public CompletableFuture<BuildStatistics> getResult() {
+            return result;
         }
 
         @Override
@@ -129,47 +101,44 @@ public final class ExportApiJavaExample {
         @Override
         public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
             JsonNode json = parse(data);
+            System.out.println("Found build " + json.get("buildId").asText() + " - " + data);
             JsonNode buildToolJson = json.get("toolType");
-            if (buildToolJson == null || buildToolJson.asText().equals("gradle") || buildToolJson.asText().equals("maven")) {
+            if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
                 final String buildId = json.get("buildId").asText();
-                final BuildTool buildTool = BuildTool.valueOf(buildToolJson != null ? buildToolJson.asText().toUpperCase() : "GRADLE");
 
-                Request request = requestBuildEvents(buildTool, buildId);
+                Request request = requestBuildEvents(buildId);
 
-                ExtractUsernameFromBuildEvents listener = new ExtractUsernameFromBuildEvents(buildTool, buildId);
+                ProcessBuild listener = new ProcessBuild(buildId);
                 eventSourceFactory.newEventSource(request, listener);
-                candidateUsernames.add(listener.getUsername());
+                buildsBeingProcessed.add(listener.getResult());
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
-            usernames.complete(candidateUsernames.stream()
-                    .map(u -> {
+            result.complete(buildsBeingProcessed.stream()
+                    .map(result -> {
                         try {
-                            return u.get();
-                        } catch (InterruptedException | ExecutionException e) {
-                            e.printStackTrace();
-                            return "<unknown>";
+                            return result.get(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                            throw new RuntimeException(e);
                         }
                     })
-                    .collect(Collectors.toList())
-            );
+                    .reduce((a, b) -> a)
+                    .get());
         }
     }
 
-    private static class ExtractUsernameFromBuildEvents extends PrintFailuresEventSourceListener {
-        private final BuildTool buildTool;
+    private static class ProcessBuild extends PrintFailuresEventSourceListener {
         private final String buildId;
-        private final CompletableFuture<String> username = new CompletableFuture<>();
+        private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
 
-        private ExtractUsernameFromBuildEvents(BuildTool buildTool, String buildId) {
-            this.buildTool = buildTool;
+        private ProcessBuild(String buildId) {
             this.buildId = buildId;
         }
 
-        public CompletableFuture<String> getUsername() {
-            return username;
+        public CompletableFuture<BuildStatistics> getResult() {
+            return result;
         }
 
         @Override
@@ -179,16 +148,17 @@ public final class ExportApiJavaExample {
 
         @Override
         public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
+            System.out.println("Event: " + type + " - " + data);
             if (type.equals("BuildEvent")) {
                 JsonNode eventJson = parse(data);
-                username.complete(buildTool.getExtractUsername().apply(eventJson));
+
             }
         }
 
         @Override
         public void onClosed(@NotNull EventSource eventSource) {
-            // Complete only sets the value if it hasn't already been set
-            username.complete("<unknown>");
+            System.out.println("Finished processing build " + buildId);
+            result.complete(new BuildStatistics());
         }
     }
 
@@ -227,5 +197,8 @@ public final class ExportApiJavaExample {
     private static void shutdown(OkHttpClient httpClient) {
         httpClient.dispatcher().cancelAll();
         MoreExecutors.shutdownAndAwaitTermination(httpClient.dispatcher().executorService(), Duration.ofSeconds(10));
+    }
+
+    private static class BuildStatistics {
     }
 }
