@@ -6,6 +6,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Sets;
+import com.google.common.collect.SortedMultiset;
+import com.google.common.collect.SortedSetMultimap;
+import com.google.common.io.Resources;
 import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
 import okhttp3.ConnectionPool;
@@ -21,6 +24,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -47,8 +51,6 @@ public final class ExportApiJavaExample {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        Instant since = now().minus(Duration.ofDays(7));
-
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
@@ -61,10 +63,9 @@ public final class ExportApiJavaExample {
         httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
-        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
-        eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
-        BuildStatistics result = buildQueue.stream()
+        Stream<String> builds = queryBuildsFromPast(Duration.ofDays(28), eventSourceFactory);
+//        Stream<String> builds = loadLocalBuilds("local-builds-28-days.txt");
+        BuildStatistics result = builds
                 .parallel()
                 .map(buildId -> {
                     FilterBuildByProjectAndTags projectFilter = new FilterBuildByProjectAndTags(buildId);
@@ -94,6 +95,18 @@ public final class ExportApiJavaExample {
 
         // Cleanly shuts down the HTTP client, which speeds up process termination
         shutdown(httpClient);
+    }
+
+    private static Stream<String> loadLocalBuilds(String fileName) throws IOException {
+        return Resources.readLines(Resources.getResource(fileName), StandardCharsets.UTF_8).stream();
+    }
+
+    @NotNull
+    private static Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
+        StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
+        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
+        eventSourceFactory.newEventSource(requestBuilds(now().minus(duration)), buildToolFilter);
+        return buildQueue.stream();
     }
 
     @NotNull
@@ -286,9 +299,11 @@ public final class ExportApiJavaExample {
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
             tasks.values().stream()
-                    .filter(task -> !task.type.equals("gradlebuild.integrationtests.tasks.IntegrationTest")
+                    .filter(task -> true
+                            && !task.type.startsWith("gradlebuild.integrationtests.tasks.")
                             && !task.type.equals("org.gradle.api.tasks.testing.Test")
-                            && (task.outcome.equals("success") || task.outcome.equals("failed")))
+                            && (task.outcome.equals("success") || task.outcome.equals("failed"))
+                    )
                     .forEach(task -> {
                         taskCount.incrementAndGet();
                         startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
