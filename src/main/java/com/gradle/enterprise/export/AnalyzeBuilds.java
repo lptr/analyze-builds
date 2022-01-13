@@ -6,8 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Sets;
-import com.google.common.collect.SortedMultiset;
-import com.google.common.collect.SortedSetMultimap;
 import com.google.common.io.Resources;
 import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -42,7 +40,7 @@ import java.util.stream.Stream;
 
 import static java.time.Instant.now;
 
-public final class ExportApiJavaExample {
+public final class AnalyzeBuilds {
 
     private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://ge.gradle.org");
     private static final String EXPORT_API_ACCESS_KEY = System.getenv("EXPORT_API_ACCESS_KEY");
