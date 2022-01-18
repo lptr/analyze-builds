@@ -66,14 +66,14 @@ public final class AnalyzeBuilds {
         BuildStatistics result = builds
                 .parallel()
                 .map(buildId -> {
-                    FilterBuildByProjectAndTags projectFilter = new FilterBuildByProjectAndTags(buildId);
+                    ProcessBuildInfo projectFilter = new ProcessBuildInfo(buildId);
                     eventSourceFactory.newEventSource(requestBuildInfo(buildId), projectFilter);
                     return projectFilter.getResult();
                 })
                 .map(future -> future.thenCompose(filterResult -> {
                     if (filterResult.matches) {
-                        ProcessBuild buildProcessor = new ProcessBuild(filterResult.buildId);
-                        eventSourceFactory.newEventSource(requestBuildEvents(filterResult.buildId), buildProcessor);
+                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId);
+                        eventSourceFactory.newEventSource(requestTaskEvents(filterResult.buildId), buildProcessor);
                         return buildProcessor.getResult();
                     } else {
                         return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
@@ -122,7 +122,7 @@ public final class AnalyzeBuilds {
     }
 
     @NotNull
-    private static Request requestBuildEvents(String buildId) {
+    private static Request requestTaskEvents(String buildId) {
         return new Request.Builder()
                 .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
                 .build();
@@ -167,7 +167,7 @@ public final class AnalyzeBuilds {
         }
     }
 
-    private static class FilterBuildByProjectAndTags extends PrintFailuresEventSourceListener {
+    private static class ProcessBuildInfo extends PrintFailuresEventSourceListener {
         public static class Result {
             public final String buildId;
             public final boolean matches;
@@ -183,7 +183,7 @@ public final class AnalyzeBuilds {
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
 
-        private FilterBuildByProjectAndTags(String buildId) {
+        private ProcessBuildInfo(String buildId) {
             this.buildId = buildId;
         }
 
@@ -235,7 +235,7 @@ public final class AnalyzeBuilds {
         }
     }
 
-    private static class ProcessBuild extends PrintFailuresEventSourceListener {
+    private static class ProcessTaskEvents extends PrintFailuresEventSourceListener {
         private final String buildId;
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
@@ -252,7 +252,7 @@ public final class AnalyzeBuilds {
             }
         }
 
-        private ProcessBuild(String buildId) {
+        private ProcessTaskEvents(String buildId) {
             this.buildId = buildId;
         }
 
