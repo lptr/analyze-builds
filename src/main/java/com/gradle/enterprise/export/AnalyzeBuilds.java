@@ -18,6 +18,7 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
+import org.checkerframework.checker.units.qual.K;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -36,6 +37,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
+import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
 
 import static java.time.Instant.now;
@@ -61,8 +64,8 @@ public final class AnalyzeBuilds {
         httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        Stream<String> builds = queryBuildsFromPast(Duration.ofDays(28), eventSourceFactory);
-//        Stream<String> builds = loadLocalBuilds("local-builds-28-days.txt");
+//        Stream<String> builds = queryBuildsFromPast(Duration.ofHours(2), eventSourceFactory);
+        Stream<String> builds = loadLocalBuilds("local-builds-28-days.txt");
         BuildStatistics result = builds
                 .parallel()
                 .map(buildId -> {
@@ -72,7 +75,7 @@ public final class AnalyzeBuilds {
                 })
                 .map(future -> future.thenCompose(filterResult -> {
                     if (filterResult.matches) {
-                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId);
+                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId, filterResult.maxWorkers);
                         eventSourceFactory.newEventSource(requestTaskEvents(filterResult.buildId), buildProcessor);
                         return buildProcessor.getResult();
                     } else {
@@ -117,7 +120,7 @@ public final class AnalyzeBuilds {
     @NotNull
     private static Request requestBuildInfo(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag"))
+                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes"))
                 .build();
     }
 
@@ -171,10 +174,12 @@ public final class AnalyzeBuilds {
         public static class Result {
             public final String buildId;
             public final boolean matches;
+            public final int maxWorkers;
 
-            public Result(String buildId, boolean matches) {
+            public Result(String buildId, boolean matches, int maxWorkers) {
                 this.buildId = buildId;
                 this.matches = matches;
+                this.maxWorkers = maxWorkers;
             }
         }
 
@@ -182,6 +187,7 @@ public final class AnalyzeBuilds {
         private final CompletableFuture<Result> result = new CompletableFuture<>();
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
+        private int maxWorkers;
 
         private ProcessBuildInfo(String buildId) {
             this.buildId = buildId;
@@ -212,6 +218,9 @@ public final class AnalyzeBuilds {
                         String tag = eventJson.get("data").get("tag").asText();
                         tags.add(tag);
                         break;
+                    case "BuildModes":
+                        maxWorkers = eventJson.get("data").get("maxWorkers").asInt();
+                        break;
                     default:
                         throw new AssertionError("Unknown event type: " + eventType);
                 }
@@ -231,12 +240,13 @@ public final class AnalyzeBuilds {
                 System.out.println("Found build " + buildId);
                 matches = true;
             }
-            result.complete(new Result(buildId, matches));
+            result.complete(new Result(buildId, matches, maxWorkers));
         }
     }
 
     private static class ProcessTaskEvents extends PrintFailuresEventSourceListener {
         private final String buildId;
+        private final int maxWorkers;
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
@@ -252,8 +262,9 @@ public final class AnalyzeBuilds {
             }
         }
 
-        private ProcessTaskEvents(String buildId) {
+        private ProcessTaskEvents(String buildId, int maxWorkers) {
             this.buildId = buildId;
+            this.maxWorkers = maxWorkers;
         }
 
         public CompletableFuture<BuildStatistics> getResult() {
@@ -321,7 +332,7 @@ public final class AnalyzeBuilds {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new BuildStatistics(1, taskCount.get(), ImmutableSortedMap.copyOfSorted(histogram)));
+            result.complete(new BuildStatistics(1, taskCount.get(), ImmutableSortedMap.copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
         }
     }
 
@@ -331,6 +342,14 @@ public final class AnalyzeBuilds {
 
     private static <K> void add(Map<K, Long> map, K key, long delta) {
         map.compute(key, (k, value) -> (value == null ? 0 : value) + delta);
+    }
+
+    private static <K extends Comparable<K>, V> ImmutableSortedMap<K, V> mergeMaps(Map<K, V> a, Map<K, V> b, V zero, BinaryOperator<V> add) {
+        ImmutableSortedMap.Builder<K, V> merged = ImmutableSortedMap.naturalOrder();
+        for (K key : Sets.union(a.keySet(), b.keySet())) {
+            merged.put(key, add.apply(a.getOrDefault(key, zero), b.getOrDefault(key, zero)));
+        }
+        return merged.build();
     }
 
     private static class PrintFailuresEventSourceListener extends EventSourceListener {
@@ -371,36 +390,44 @@ public final class AnalyzeBuilds {
     }
 
     private static class BuildStatistics {
-        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of());
+        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of(), ImmutableSortedMap.of());
 
         private final int buildCount;
         private final int taskCount;
-        private final ImmutableSortedMap<Integer, Long> histogram;
+        private final ImmutableSortedMap<Integer, Long> taskTimes;
+        private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
-        public BuildStatistics(int buildCount, int taskCount, ImmutableSortedMap<Integer, Long> histogram) {
+        public BuildStatistics(int buildCount, int taskCount, ImmutableSortedMap<Integer, Long> taskTimes, ImmutableSortedMap<Integer, Integer> maxWorkers) {
             this.buildCount = buildCount;
             this.taskCount = taskCount;
-            this.histogram = histogram;
+            this.taskTimes = taskTimes;
+            this.maxWorkers = maxWorkers;
         }
 
         public void print() {
-            if (histogram.isEmpty()) {
+            if (taskTimes.isEmpty()) {
                 System.out.println("No matching builds found");
                 return;
             }
             System.out.println("Statistics for " + buildCount + " builds with " + taskCount + " tasks");
-            int maxConcurrencyLevel = histogram.lastKey();
+
+            System.out.println("Concurrency levels:");
+            int maxConcurrencyLevel = taskTimes.lastKey();
             for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
-                System.out.println(concurrencyLevel + ": " + histogram.getOrDefault(concurrencyLevel, 0L) + " ms");
+                System.out.printf("%d: %d ms%n", concurrencyLevel, taskTimes.getOrDefault(concurrencyLevel, 0L));
+            }
+
+            System.out.println("Max workers>:");
+            int mostWorkers = maxWorkers.lastKey();
+            for (int maxWorker = mostWorkers; maxWorker >= 1; maxWorker--) {
+                System.out.printf("%d: %d builds%n", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
             }
         }
 
         public static BuildStatistics merge(BuildStatistics a, BuildStatistics b) {
-            ImmutableSortedMap.Builder<Integer, Long> merged = ImmutableSortedMap.naturalOrder();
-            for (Integer concurrencyLevel : Sets.union(a.histogram.keySet(), b.histogram.keySet())) {
-                merged.put(concurrencyLevel, a.histogram.getOrDefault(concurrencyLevel, 0L) + b.histogram.getOrDefault(concurrencyLevel, 0L));
-            }
-            return new BuildStatistics(a.buildCount + b.buildCount, a.taskCount + b.taskCount, merged.build());
+            ImmutableSortedMap<Integer, Long> taskTimes = mergeMaps(a.taskTimes, b.taskTimes, 0L, (aV, bV) -> aV + bV);
+            ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(a.maxWorkers, b.maxWorkers, 0, (aV, bV) -> aV + bV);
+            return new BuildStatistics(a.buildCount + b.buildCount, a.taskCount + b.taskCount, taskTimes, maxWorkers);
         }
     }
 
