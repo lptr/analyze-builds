@@ -310,12 +310,14 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         private static class TaskInfo {
             public final String type;
+            public final String path;
             public final long startTime;
             public long finishTime;
             public String outcome;
 
-            public TaskInfo(String type, long startTime) {
+            public TaskInfo(String type, String path, long startTime) {
                 this.type = type;
+                this.path = path;
                 this.startTime = startTime;
             }
         }
@@ -346,6 +348,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                     case "TaskStarted":
                         tasks.put(eventId, new TaskInfo(
                                 eventJson.get("data").get("className").asText(),
+                                eventJson.get("data").get("path").asText(),
                                 timestamp
                         ));
                         break;
@@ -365,7 +368,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             System.out.println("Finished processing build " + buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
-            SortedMap<String, Long> taskTimes = new TreeMap<>();
+            SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
+            SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
                     .filter(task -> true
                             && !task.type.startsWith("gradlebuild.integrationtests.tasks.")
@@ -374,7 +378,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                     )
                     .forEach(task -> {
                         taskCount.incrementAndGet();
-                        add(taskTimes, task.type, task.finishTime - task.startTime);
+                        add(taskTypeTimes, task.type, task.finishTime - task.startTime);
+                        add(taskPathTimes, task.path, task.finishTime - task.startTime);
                         add(startStopEvents, task.startTime, 1);
                         add(startStopEvents, task.finishTime, -1);
                     });
@@ -392,7 +397,14 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new DefaultBuildStatistics(ImmutableList.of(buildId), taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
+            result.complete(new DefaultBuildStatistics(
+                    ImmutableList.of(buildId),
+                    taskCount.get(),
+                    copyOfSorted(taskTypeTimes),
+                    copyOfSorted(taskPathTimes),
+                    copyOfSorted(histogram),
+                    ImmutableSortedMap.of(maxWorkers, 1))
+            );
         }
     }
 
@@ -477,20 +489,23 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     private static class DefaultBuildStatistics implements BuildStatistics {
         private final ImmutableList<String> buildIds;
         private final int taskCount;
-        private final ImmutableSortedMap<String, Long> taskTimes;
+        private final ImmutableSortedMap<String, Long> taskTypeTimes;
+        private final ImmutableSortedMap<String, Long> taskPathTimes;
         private final ImmutableSortedMap<Integer, Long> workerTimes;
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
         public DefaultBuildStatistics(
                 ImmutableList<String> buildIds,
                 int taskCount,
-                ImmutableSortedMap<String, Long> taskTimes,
+                ImmutableSortedMap<String, Long> taskTypeTimes,
+                ImmutableSortedMap<String, Long> taskPathTimes,
                 ImmutableSortedMap<Integer, Long> workerTimes,
                 ImmutableSortedMap<Integer, Integer> maxWorkers
         ) {
             this.buildIds = buildIds;
             this.taskCount = taskCount;
-            this.taskTimes = taskTimes;
+            this.taskTypeTimes = taskTypeTimes;
+            this.taskPathTimes = taskPathTimes;
             this.workerTimes = workerTimes;
             this.maxWorkers = maxWorkers;
         }
@@ -504,15 +519,22 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         public void print() {
             System.out.println("Statistics for " + buildIds.size() + " builds with " + taskCount + " tasks");
 
+            System.out.println();
             System.out.println("Concurrency levels:");
             int maxConcurrencyLevel = workerTimes.lastKey();
             for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
                 System.out.printf("%d: %d ms%n", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
             }
 
-            System.out.println("Task times:");
-            taskTimes.forEach((taskType, count) -> System.out.printf("%s: %d%n", taskType, count));
+            System.out.println();
+            System.out.println("Task times by type:");
+            taskTypeTimes.forEach((taskType, count) -> System.out.printf("%s: %d%n", taskType, count));
 
+            System.out.println();
+            System.out.println("Task times by path:");
+            taskPathTimes.forEach((taskPath, count) -> System.out.printf("%s: %d%n", taskPath, count));
+
+            System.out.println();
             System.out.println("Max workers:");
             int mostWorkers = maxWorkers.lastKey();
             for (int maxWorker = mostWorkers; maxWorker >= 1; maxWorker--) {
@@ -526,10 +548,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 DefaultBuildStatistics other = (DefaultBuildStatistics) o;
                 ImmutableList<String> buildIds = ImmutableList.<String>builder().addAll(this.buildIds).addAll(other.buildIds).build();
                 int taskCount = this.taskCount + other.taskCount;
-                ImmutableSortedMap<String, Long> taskTimes = mergeMaps(this.taskTimes, other.taskTimes, 0L, (aV, bV) -> aV + bV);
+                ImmutableSortedMap<String, Long> taskTypeTimes = mergeMaps(this.taskTypeTimes, other.taskTypeTimes, 0L, (aV, bV) -> aV + bV);
+                ImmutableSortedMap<String, Long> taskPathTimes = mergeMaps(this.taskPathTimes, other.taskPathTimes, 0L, (aV, bV) -> aV + bV);
                 ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(this.workerTimes, other.workerTimes, 0L, (aV, bV) -> aV + bV);
                 ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(this.maxWorkers, other.maxWorkers, 0, (aV, bV) -> aV + bV);
-                return new DefaultBuildStatistics(buildIds, taskCount, taskTimes, workerTimes, maxWorkers);
+                return new DefaultBuildStatistics(buildIds, taskCount, taskTypeTimes, taskPathTimes, workerTimes, maxWorkers);
             } else {
                 return this;
             }
