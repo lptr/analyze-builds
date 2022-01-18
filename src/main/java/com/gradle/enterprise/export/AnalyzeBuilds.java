@@ -102,7 +102,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> builds = buildInputFile == null
-                ? queryBuildsFromPast(Duration.ofHours(2), eventSourceFactory)
+                ? queryBuildsFromPast(since, eventSourceFactory)
                 : loadBuildsFromFile(buildInputFile);
         BuildStatistics result = builds
                 .parallel()
@@ -122,7 +122,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 }))
                 .map(statsResult -> {
                     try {
-                        return statsResult.get(1, TimeUnit.HOURS);
+                        return statsResult.get();
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
