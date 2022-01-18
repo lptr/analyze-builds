@@ -26,6 +26,7 @@ import picocli.CommandLine.Option;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -42,6 +43,7 @@ import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -54,7 +56,7 @@ import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 import static java.time.Instant.now;
 
 @Command(name = "analyze", description = "Analyze GE data")
-public final class AnalyzeBuilds implements Runnable {
+public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--server", description = "GE server URL", converter = HttpUrlConverter.class)
     private HttpUrl serverUrl = HttpUrl.parse("https://ge.gradle.org");
 
@@ -70,6 +72,9 @@ public final class AnalyzeBuilds implements Runnable {
     @Option(names = "--load-from", description = "File to load build IDs from")
     private File buildInputFile;
 
+    @Option(names = "--save-to", description = "File to save build IDs to")
+    private File buildOutputFile;
+
     @Option(names = "--query-since", description = "Query builds in the given timeframe, defaults to two hours, see Duration.parse() for more info; ignored when --builds is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
@@ -81,7 +86,7 @@ public final class AnalyzeBuilds implements Runnable {
     }
 
     @Override
-    public void run() {
+    public Integer call() throws Exception {
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
@@ -127,8 +132,17 @@ public final class AnalyzeBuilds implements Runnable {
 
         result.print();
 
+        if (buildOutputFile != null) {
+            System.out.printf("Storing build IDs in %s%n", buildOutputFile);
+            buildOutputFile.getParentFile().mkdirs();
+            try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(buildOutputFile.toPath(), StandardCharsets.UTF_8))) {
+                result.getBuildIds()
+                        .forEach(writer::println);
+            }
+        }
         // Cleanly shuts down the HTTP client, which speeds up process termination
         shutdown(httpClient);
+        return 0;
     }
 
     private static Stream<String> loadBuildsFromFile(File file) {
@@ -378,7 +392,7 @@ public final class AnalyzeBuilds implements Runnable {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new DefaultBuildStatistics(1, taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
+            result.complete(new DefaultBuildStatistics(ImmutableList.of(buildId), taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
         }
     }
 
@@ -438,6 +452,11 @@ public final class AnalyzeBuilds implements Runnable {
     private interface BuildStatistics {
         public static final BuildStatistics EMPTY = new BuildStatistics() {
             @Override
+            public List<String> getBuildIds() {
+                return ImmutableList.of();
+            }
+
+            @Override
             public void print() {
                 System.out.println("No matching builds found");
             }
@@ -448,34 +467,42 @@ public final class AnalyzeBuilds implements Runnable {
             }
         };
 
+        List<String> getBuildIds();
+
         void print();
 
         BuildStatistics merge(BuildStatistics other);
     }
 
     private static class DefaultBuildStatistics implements BuildStatistics {
-        private final int buildCount;
+        private final ImmutableList<String> buildIds;
         private final int taskCount;
         private final ImmutableSortedMap<String, Long> taskTimes;
         private final ImmutableSortedMap<Integer, Long> workerTimes;
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
         public DefaultBuildStatistics(
-                int buildCount,
+                ImmutableList<String> buildIds,
                 int taskCount,
                 ImmutableSortedMap<String, Long> taskTimes,
                 ImmutableSortedMap<Integer, Long> workerTimes,
                 ImmutableSortedMap<Integer, Integer> maxWorkers
         ) {
-            this.buildCount = buildCount;
+            this.buildIds = buildIds;
             this.taskCount = taskCount;
             this.taskTimes = taskTimes;
             this.workerTimes = workerTimes;
             this.maxWorkers = maxWorkers;
         }
 
+        @Override
+        public ImmutableList<String> getBuildIds() {
+            return buildIds;
+        }
+
+        @Override
         public void print() {
-            System.out.println("Statistics for " + buildCount + " builds with " + taskCount + " tasks");
+            System.out.println("Statistics for " + buildIds.size() + " builds with " + taskCount + " tasks");
 
             System.out.println("Concurrency levels:");
             int maxConcurrencyLevel = workerTimes.lastKey();
@@ -493,19 +520,16 @@ public final class AnalyzeBuilds implements Runnable {
             }
         }
 
+        @Override
         public BuildStatistics merge(BuildStatistics o) {
             if (o instanceof DefaultBuildStatistics) {
                 DefaultBuildStatistics other = (DefaultBuildStatistics) o;
+                ImmutableList<String> buildIds = ImmutableList.<String>builder().addAll(this.buildIds).addAll(other.buildIds).build();
+                int taskCount = this.taskCount + other.taskCount;
                 ImmutableSortedMap<String, Long> taskTimes = mergeMaps(this.taskTimes, other.taskTimes, 0L, (aV, bV) -> aV + bV);
                 ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(this.workerTimes, other.workerTimes, 0L, (aV, bV) -> aV + bV);
                 ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(this.maxWorkers, other.maxWorkers, 0, (aV, bV) -> aV + bV);
-                return new DefaultBuildStatistics(
-                        this.buildCount + other.buildCount,
-                        this.taskCount + other.taskCount,
-                        taskTimes,
-                        workerTimes,
-                        maxWorkers
-                );
+                return new DefaultBuildStatistics(buildIds, taskCount, taskTimes, workerTimes, maxWorkers);
             } else {
                 return this;
             }
