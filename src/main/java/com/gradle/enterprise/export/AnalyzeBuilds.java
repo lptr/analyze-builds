@@ -333,7 +333,7 @@ public final class AnalyzeBuilds {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new BuildStatistics(1, taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
+            result.complete(new DefaultBuildStatistics(1, taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
         }
     }
 
@@ -390,21 +390,32 @@ public final class AnalyzeBuilds {
         MoreExecutors.shutdownAndAwaitTermination(httpClient.dispatcher().executorService(), Duration.ofSeconds(10));
     }
 
-    private static class BuildStatistics {
-        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of(), ImmutableSortedMap.of(), ImmutableSortedMap.of()) {
+    private interface BuildStatistics {
+        public static final BuildStatistics EMPTY = new BuildStatistics() {
             @Override
             public void print() {
                 System.out.println("No matching builds found");
             }
+
+            @Override
+            public BuildStatistics merge(BuildStatistics other) {
+                return other;
+            }
         };
 
+        void print();
+
+        BuildStatistics merge(BuildStatistics other);
+    }
+
+    private static class DefaultBuildStatistics implements BuildStatistics {
         private final int buildCount;
         private final int taskCount;
         private final ImmutableSortedMap<String, Long> taskTimes;
         private final ImmutableSortedMap<Integer, Long> workerTimes;
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
-        public BuildStatistics(
+        public DefaultBuildStatistics(
                 int buildCount,
                 int taskCount,
                 ImmutableSortedMap<String, Long> taskTimes,
@@ -437,17 +448,22 @@ public final class AnalyzeBuilds {
             }
         }
 
-        public static BuildStatistics merge(BuildStatistics a, BuildStatistics b) {
-            ImmutableSortedMap<String, Long> taskTimes = mergeMaps(a.taskTimes, b.taskTimes, 0L, (aV, bV) -> aV + bV);
-            ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(a.workerTimes, b.workerTimes, 0L, (aV, bV) -> aV + bV);
-            ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(a.maxWorkers, b.maxWorkers, 0, (aV, bV) -> aV + bV);
-            return new BuildStatistics(
-                    a.buildCount + b.buildCount,
-                    a.taskCount + b.taskCount,
-                    taskTimes,
-                    workerTimes,
-                    maxWorkers
-            );
+        public BuildStatistics merge(BuildStatistics o) {
+            if (o instanceof DefaultBuildStatistics) {
+                DefaultBuildStatistics other = (DefaultBuildStatistics) o;
+                ImmutableSortedMap<String, Long> taskTimes = mergeMaps(this.taskTimes, other.taskTimes, 0L, (aV, bV) -> aV + bV);
+                ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(this.workerTimes, other.workerTimes, 0L, (aV, bV) -> aV + bV);
+                ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(this.maxWorkers, other.maxWorkers, 0, (aV, bV) -> aV + bV);
+                return new DefaultBuildStatistics(
+                        this.buildCount + other.buildCount,
+                        this.taskCount + other.taskCount,
+                        taskTimes,
+                        workerTimes,
+                        maxWorkers
+                );
+            } else {
+                return this;
+            }
         }
     }
 
