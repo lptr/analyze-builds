@@ -18,7 +18,6 @@ import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.checkerframework.checker.units.qual.K;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -37,10 +36,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiFunction;
 import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
 
+import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 import static java.time.Instant.now;
 
 public final class AnalyzeBuilds {
@@ -307,6 +306,7 @@ public final class AnalyzeBuilds {
             System.out.println("Finished processing build " + buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
+            SortedMap<String, Long> taskTimes = new TreeMap<>();
             tasks.values().stream()
                     .filter(task -> true
                             && !task.type.startsWith("gradlebuild.integrationtests.tasks.")
@@ -315,8 +315,9 @@ public final class AnalyzeBuilds {
                     )
                     .forEach(task -> {
                         taskCount.incrementAndGet();
+                        add(taskTimes, task.type, task.finishTime - task.startTime);
                         add(startStopEvents, task.startTime, 1);
-                        add(startStopEvents, task.finishTime, - 1);
+                        add(startStopEvents, task.finishTime, -1);
                     });
 
             int concurrencyLevel = 0;
@@ -332,7 +333,7 @@ public final class AnalyzeBuilds {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new BuildStatistics(1, taskCount.get(), ImmutableSortedMap.copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
+            result.complete(new BuildStatistics(1, taskCount.get(), copyOfSorted(taskTimes), copyOfSorted(histogram), ImmutableSortedMap.of(maxWorkers, 1)));
         }
     }
 
@@ -390,34 +391,46 @@ public final class AnalyzeBuilds {
     }
 
     private static class BuildStatistics {
-        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of(), ImmutableSortedMap.of());
+        public static final BuildStatistics EMPTY = new BuildStatistics(0, 0, ImmutableSortedMap.of(), ImmutableSortedMap.of(), ImmutableSortedMap.of()) {
+            @Override
+            public void print() {
+                System.out.println("No matching builds found");
+            }
+        };
 
         private final int buildCount;
         private final int taskCount;
-        private final ImmutableSortedMap<Integer, Long> taskTimes;
+        private final ImmutableSortedMap<String, Long> taskTimes;
+        private final ImmutableSortedMap<Integer, Long> workerTimes;
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
-        public BuildStatistics(int buildCount, int taskCount, ImmutableSortedMap<Integer, Long> taskTimes, ImmutableSortedMap<Integer, Integer> maxWorkers) {
+        public BuildStatistics(
+                int buildCount,
+                int taskCount,
+                ImmutableSortedMap<String, Long> taskTimes,
+                ImmutableSortedMap<Integer, Long> workerTimes,
+                ImmutableSortedMap<Integer, Integer> maxWorkers
+        ) {
             this.buildCount = buildCount;
             this.taskCount = taskCount;
             this.taskTimes = taskTimes;
+            this.workerTimes = workerTimes;
             this.maxWorkers = maxWorkers;
         }
 
         public void print() {
-            if (taskTimes.isEmpty()) {
-                System.out.println("No matching builds found");
-                return;
-            }
             System.out.println("Statistics for " + buildCount + " builds with " + taskCount + " tasks");
 
             System.out.println("Concurrency levels:");
-            int maxConcurrencyLevel = taskTimes.lastKey();
+            int maxConcurrencyLevel = workerTimes.lastKey();
             for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
-                System.out.printf("%d: %d ms%n", concurrencyLevel, taskTimes.getOrDefault(concurrencyLevel, 0L));
+                System.out.printf("%d: %d ms%n", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
             }
 
-            System.out.println("Max workers>:");
+            System.out.println("Task times:");
+            taskTimes.forEach((taskType, count) -> System.out.printf("%s: %d%n", taskType, count));
+
+            System.out.println("Max workers:");
             int mostWorkers = maxWorkers.lastKey();
             for (int maxWorker = mostWorkers; maxWorker >= 1; maxWorker--) {
                 System.out.printf("%d: %d builds%n", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
@@ -425,9 +438,16 @@ public final class AnalyzeBuilds {
         }
 
         public static BuildStatistics merge(BuildStatistics a, BuildStatistics b) {
-            ImmutableSortedMap<Integer, Long> taskTimes = mergeMaps(a.taskTimes, b.taskTimes, 0L, (aV, bV) -> aV + bV);
+            ImmutableSortedMap<String, Long> taskTimes = mergeMaps(a.taskTimes, b.taskTimes, 0L, (aV, bV) -> aV + bV);
+            ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(a.workerTimes, b.workerTimes, 0L, (aV, bV) -> aV + bV);
             ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(a.maxWorkers, b.maxWorkers, 0, (aV, bV) -> aV + bV);
-            return new BuildStatistics(a.buildCount + b.buildCount, a.taskCount + b.taskCount, taskTimes, maxWorkers);
+            return new BuildStatistics(
+                    a.buildCount + b.buildCount,
+                    a.taskCount + b.taskCount,
+                    taskTimes,
+                    workerTimes,
+                    maxWorkers
+            );
         }
     }
 
