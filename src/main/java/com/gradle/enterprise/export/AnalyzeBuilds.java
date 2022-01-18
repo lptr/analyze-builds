@@ -304,8 +304,8 @@ public final class AnalyzeBuilds {
                     )
                     .forEach(task -> {
                         taskCount.incrementAndGet();
-                        startStopEvents.compute(task.startTime, (key, value) -> nullToZero(value) + 1);
-                        startStopEvents.compute(task.finishTime, (key, value) -> nullToZero(value) - 1);
+                        add(startStopEvents, task.startTime, 1);
+                        add(startStopEvents, task.finishTime, - 1);
                     });
 
             int concurrencyLevel = 0;
@@ -316,7 +316,7 @@ public final class AnalyzeBuilds {
                 int delta = entry.getValue();
                 if (concurrencyLevel != 0) {
                     long duration = timestamp - lastTimeStamp;
-                    histogram.compute(concurrencyLevel, (concurrency, recordedDuration) -> (recordedDuration == null ? 0 : recordedDuration) + duration);
+                    add(histogram, concurrencyLevel, duration);
                 }
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
@@ -325,8 +325,12 @@ public final class AnalyzeBuilds {
         }
     }
 
-    private static int nullToZero(Integer value) {
-        return value == null ? 0 : value;
+    private static <K> void add(Map<K, Integer> map, K key, int delta) {
+        map.compute(key, (k, value) -> (value == null ? 0 : value) + delta);
+    }
+
+    private static <K> void add(Map<K, Long> map, K key, long delta) {
+        map.compute(key, (k, value) -> (value == null ? 0 : value) + delta);
     }
 
     private static class PrintFailuresEventSourceListener extends EventSourceListener {
