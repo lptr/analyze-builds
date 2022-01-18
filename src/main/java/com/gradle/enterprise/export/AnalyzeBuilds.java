@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Sets;
-import com.google.common.io.Resources;
 import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
 import okhttp3.ConnectionPool;
@@ -20,12 +19,23 @@ import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.ITypeConverter;
+import picocli.CommandLine.Option;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,38 +47,62 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BinaryOperator;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 import static java.time.Instant.now;
 
-public final class AnalyzeBuilds {
+@Command(name = "analyze", description = "Analyze GE data")
+public final class AnalyzeBuilds implements Runnable {
+    @Option(names = "--server", description = "GE server URL", converter = HttpUrlConverter.class)
+    private HttpUrl serverUrl = HttpUrl.parse("https://ge.gradle.org");
 
-    private static final HttpUrl GRADLE_ENTERPRISE_SERVER_URL = HttpUrl.parse("https://ge.gradle.org");
-    private static final String EXPORT_API_ACCESS_KEY = System.getenv("EXPORT_API_ACCESS_KEY");
-    private static final int MAX_BUILD_SCANS_STREAMED_CONCURRENTLY = 30;
+    @Option(names = "--api-key", description = "Export API access key, can be set via EXPORT_API_ACCESS_KEY environment variable")
+    private String exportApiAccessKey = System.getenv("EXPORT_API_ACCESS_KEY");
+
+    @Option(names = "--projects", split = ",")
+    private List<String> projectNames = Arrays.asList("gradle");
+
+    @Option(names = "--max-concurrency", description = "Maximum number of build scans streamed concurrently")
+    private int maxBuildScansStreamedConcurrently = 30;
+
+    @Option(names = "--load-from", description = "File to load build IDs from")
+    private File buildInputFile;
+
+    @Option(names = "--query-since", description = "Query builds in the given timeframe, defaults to two hours, see Duration.parse() for more info; ignored when --builds is specified", converter = DurationConverter.class)
+    private Duration since = Duration.ofHours(2);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
+        int exitCode = new CommandLine(new AnalyzeBuilds()).execute(args);
+        System.exit(exitCode);
+    }
+
+    @Override
+    public void run() {
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
                 .retryOnConnectionFailure(true)
-                .connectionPool(new ConnectionPool(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY, 30, TimeUnit.SECONDS))
-                .authenticator(Authenticators.bearerToken(EXPORT_API_ACCESS_KEY))
+                .connectionPool(new ConnectionPool(maxBuildScansStreamedConcurrently, 30, TimeUnit.SECONDS))
+                .authenticator(Authenticators.bearerToken(exportApiAccessKey))
                 .protocols(ImmutableList.of(Protocol.HTTP_1_1))
                 .build();
-        httpClient.dispatcher().setMaxRequests(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
-        httpClient.dispatcher().setMaxRequestsPerHost(MAX_BUILD_SCANS_STREAMED_CONCURRENTLY);
+        httpClient.dispatcher().setMaxRequests(maxBuildScansStreamedConcurrently);
+        httpClient.dispatcher().setMaxRequestsPerHost(maxBuildScansStreamedConcurrently);
+
+        System.out.printf("Connecting to GE server at %s, fetching info about projects: %s%n", serverUrl, projectNames.stream().collect(Collectors.joining(", ")));
 
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-//        Stream<String> builds = queryBuildsFromPast(Duration.ofHours(2), eventSourceFactory);
-        Stream<String> builds = loadLocalBuilds("local-builds-28-days.txt");
+        Stream<String> builds = buildInputFile == null
+                ? queryBuildsFromPast(Duration.ofHours(2), eventSourceFactory)
+                : loadBuildsFromFile(buildInputFile);
         BuildStatistics result = builds
                 .parallel()
                 .map(buildId -> {
-                    ProcessBuildInfo projectFilter = new ProcessBuildInfo(buildId);
+                    ProcessBuildInfo projectFilter = new ProcessBuildInfo(buildId, projectNames);
                     eventSourceFactory.newEventSource(requestBuildInfo(buildId), projectFilter);
                     return projectFilter.getResult();
                 })
@@ -97,36 +131,45 @@ public final class AnalyzeBuilds {
         shutdown(httpClient);
     }
 
-    private static Stream<String> loadLocalBuilds(String fileName) throws IOException {
-        return Resources.readLines(Resources.getResource(fileName), StandardCharsets.UTF_8).stream();
+    private static Stream<String> loadBuildsFromFile(File file) {
+        System.out.println("Fetching build IDs from " + file);
+        try {
+            return Files.readAllLines(file.toPath(), StandardCharsets.UTF_8).stream();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @NotNull
-    private static Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
+    private Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
+        Instant since = now().minus(duration);
+        System.out.printf("Querying builds since %s%n", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
+                .withZone(ZoneId.systemDefault())
+                .format(since));
         StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
         FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
-        eventSourceFactory.newEventSource(requestBuilds(now().minus(duration)), buildToolFilter);
+        eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
         return buildQueue.stream();
     }
 
     @NotNull
-    private static Request requestBuilds(Instant since) {
+    private Request requestBuilds(Instant since) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
+                .url(serverUrl.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
                 .build();
     }
 
     @NotNull
-    private static Request requestBuildInfo(String buildId) {
+    private Request requestBuildInfo(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes"))
+                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes"))
                 .build();
     }
 
     @NotNull
-    private static Request requestTaskEvents(String buildId) {
+    private Request requestTaskEvents(String buildId) {
         return new Request.Builder()
-                .url(GRADLE_ENTERPRISE_SERVER_URL.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
+                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
                 .build();
     }
 
@@ -183,13 +226,15 @@ public final class AnalyzeBuilds {
         }
 
         private final String buildId;
+        private final List<String> projectNames;
         private final CompletableFuture<Result> result = new CompletableFuture<>();
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
         private int maxWorkers;
 
-        private ProcessBuildInfo(String buildId) {
+        private ProcessBuildInfo(String buildId, List<String> projectNames) {
             this.buildId = buildId;
+            this.projectNames = projectNames;
         }
 
         public CompletableFuture<Result> getResult() {
@@ -231,7 +276,7 @@ public final class AnalyzeBuilds {
         public void onClosed(@NotNull EventSource eventSource) {
             boolean matches;
             BuildStatistics stats;
-            if (!rootProjects.contains("gradle")) {
+            if (!projectNames.stream().anyMatch(rootProjects::contains)) {
                 matches = false;
             } else if (!tags.contains("LOCAL")) {
                 matches = false;
@@ -499,6 +544,20 @@ public final class AnalyzeBuilds {
                         }
                     })
                     .takeWhile(value -> value != poison);
+        }
+    }
+
+    private static class HttpUrlConverter implements ITypeConverter<HttpUrl> {
+        @Override
+        public HttpUrl convert(String value) throws Exception {
+            return HttpUrl.parse(value);
+        }
+    }
+
+    private static class DurationConverter implements ITypeConverter<Duration> {
+        @Override
+        public Duration convert(String value) throws Exception {
+            return Duration.parse(value);
         }
     }
 }
