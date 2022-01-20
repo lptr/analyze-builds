@@ -106,8 +106,18 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         httpClient.dispatcher().setMaxRequests(maxBuildScansStreamedConcurrently);
         httpClient.dispatcher().setMaxRequestsPerHost(maxBuildScansStreamedConcurrently);
 
-        System.out.printf("Connecting to GE server at %s, fetching info about projects: %s%n", serverUrl, projectNames.stream().collect(Collectors.joining(", ")));
+        try {
+            processEvents(httpClient);
+        } finally {
+            // Cleanly shuts down the HTTP client, which speeds up process termination
+            httpClient.dispatcher().cancelAll();
+            MoreExecutors.shutdownAndAwaitTermination(httpClient.dispatcher().executorService(), Duration.ofSeconds(10));
+        }
+        return 0;
+    }
 
+    private void processEvents(OkHttpClient httpClient) throws Exception {
+        System.out.printf("Connecting to GE server at %s, fetching info about projects: %s%n", serverUrl, projectNames.stream().collect(Collectors.joining(", ")));
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> builds = buildInputFile == null
                 ? queryBuildsFromPast(since, eventSourceFactory)
@@ -148,9 +158,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                         .forEach(writer::println);
             }
         }
-        // Cleanly shuts down the HTTP client, which speeds up process termination
-        shutdown(httpClient);
-        return 0;
     }
 
     private static Stream<String> loadBuildsFromFile(File file) {
@@ -476,11 +483,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
         }
-    }
-
-    private static void shutdown(OkHttpClient httpClient) {
-        httpClient.dispatcher().cancelAll();
-        MoreExecutors.shutdownAndAwaitTermination(httpClient.dispatcher().executorService(), Duration.ofSeconds(10));
     }
 
     private interface BuildStatistics {
