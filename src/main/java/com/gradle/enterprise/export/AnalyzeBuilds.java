@@ -14,16 +14,17 @@ import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.ITypeConverter;
 import picocli.CommandLine.Option;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -161,7 +162,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
     }
 
-    @NotNull
+    @Nonnull
     private Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
         Instant since = now().minus(duration);
         System.out.printf("Querying builds since %s%n", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
@@ -173,21 +174,24 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         return buildQueue.stream();
     }
 
-    @NotNull
+    @Nonnull
+    @SuppressWarnings("ConstantConditions")
     private Request requestBuilds(Instant since) {
         return new Request.Builder()
                 .url(serverUrl.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
                 .build();
     }
 
-    @NotNull
+    @Nonnull
+    @SuppressWarnings("ConstantConditions")
     private Request requestBuildInfo(String buildId) {
         return new Request.Builder()
                 .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes"))
                 .build();
     }
 
-    @NotNull
+    @Nonnull
+    @SuppressWarnings("ConstantConditions")
     private Request requestTaskEvents(String buildId) {
         return new Request.Builder()
                 .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
@@ -204,12 +208,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
+        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
             System.out.println("Streaming builds...");
         }
 
         @Override
-        public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
+        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
             JsonNode json = parse(data);
             JsonNode buildToolJson = json.get("toolType");
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
@@ -223,7 +227,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onClosed(@NotNull EventSource eventSource) {
+        public void onClosed(@Nonnull EventSource eventSource) {
             System.out.println("Finished querying builds");
             try {
                 buildQueue.close();
@@ -263,13 +267,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
+        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
         }
 
         @Override
-        public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
+        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
             // System.out.println("Event: " + type + " - " + data);
-            if (type.equals("BuildEvent")) {
+            if ("BuildEvent".equals(type)) {
                 JsonNode eventJson = parse(data);
                 long timestamp = eventJson.get("timestamp").asLong();
                 String eventType = eventJson.get("type").get("eventType").asText();
@@ -294,7 +298,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onClosed(@NotNull EventSource eventSource) {
+        public void onClosed(@Nonnull EventSource eventSource) {
             boolean matches;
             BuildStatistics stats;
             if (!projectNames.stream().anyMatch(rootProjects::contains)) {
@@ -347,13 +351,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onOpen(@NotNull EventSource eventSource, @NotNull Response response) {
+        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
         }
 
         @Override
-        public void onEvent(@NotNull EventSource eventSource, @Nullable String id, @Nullable String type, @NotNull String data) {
+        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
             // System.out.println("Event: " + type + " !! " + id + " - " + data);
-            if (type.equals("BuildEvent")) {
+            if ("BuildEvent".equals(type)) {
                 JsonNode eventJson = parse(data);
                 long timestamp = eventJson.get("timestamp").asLong();
                 String eventType = eventJson.get("type").get("eventType").asText();
@@ -379,7 +383,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void onClosed(@NotNull EventSource eventSource) {
+        public void onClosed(@Nonnull EventSource eventSource) {
             System.out.println("Finished processing build " + buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
@@ -439,7 +443,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     private static class PrintFailuresEventSourceListener extends EventSourceListener {
         @Override
-        public void onFailure(@NotNull EventSource eventSource, @Nullable Throwable t, @Nullable Response response) {
+        public void onFailure(@Nonnull EventSource eventSource, @Nullable Throwable t, @Nullable Response response) {
             if (t != null) {
                 System.err.println("FAILED: " + t.getMessage());
                 t.printStackTrace();
@@ -452,9 +456,14 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             this.onClosed(eventSource);
         }
 
+        @Nullable
         private String getResponseBody(Response response) {
             try {
-                return response.body().string();
+                ResponseBody body = response.body();
+                if (body == null) {
+                    return null;
+                }
+                return body.string();
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
