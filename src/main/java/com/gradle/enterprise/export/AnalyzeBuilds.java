@@ -55,7 +55,11 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 import static java.time.Instant.now;
 
-@Command(name = "analyze", description = "Analyze GE data")
+@Command(
+        name = "analyze",
+        description = "Analyze GE data",
+        mixinStandardHelpOptions = true
+)
 public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--server", description = "GE server URL", converter = HttpUrlConverter.class)
     private HttpUrl serverUrl = HttpUrl.parse("https://ge.gradle.org");
@@ -75,7 +79,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--save-to", description = "File to save build IDs to")
     private File buildOutputFile;
 
-    @Option(names = "--query-since", description = "Query builds in the given timeframe, defaults to two hours, see Duration.parse() for more info; ignored when --builds is specified", converter = DurationConverter.class)
+    @Option(names = "--query-since", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --load-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
     @Option(names = "--exclude-task-type", description = "Exclude tasks with FQCNs starting with the given pattern")
