@@ -78,6 +78,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--query-since", description = "Query builds in the given timeframe, defaults to two hours, see Duration.parse() for more info; ignored when --builds is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
+    @Option(names = "--exclude-task-type", description = "Exclude tasks with FQCNs starting with the given pattern")
+    private List<String> excludedTaskTypes = ImmutableList.of();
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
@@ -113,7 +116,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 })
                 .map(future -> future.thenCompose(filterResult -> {
                     if (filterResult.matches) {
-                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId, filterResult.maxWorkers);
+                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId, filterResult.maxWorkers, excludedTaskTypes);
                         eventSourceFactory.newEventSource(requestTaskEvents(filterResult.buildId), buildProcessor);
                         return buildProcessor.getResult();
                     } else {
@@ -305,6 +308,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     private static class ProcessTaskEvents extends PrintFailuresEventSourceListener {
         private final String buildId;
         private final int maxWorkers;
+        private final List<String> excludedTaskTypes;
         private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
@@ -322,9 +326,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             }
         }
 
-        private ProcessTaskEvents(String buildId, int maxWorkers) {
+        private ProcessTaskEvents(String buildId, int maxWorkers, List<String> excludedTaskTypes) {
             this.buildId = buildId;
             this.maxWorkers = maxWorkers;
+            this.excludedTaskTypes = excludedTaskTypes;
         }
 
         public CompletableFuture<BuildStatistics> getResult() {
@@ -371,11 +376,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
-                    .filter(task -> true
-                            && !task.type.startsWith("gradlebuild.integrationtests.tasks.")
-                            && !task.type.equals("org.gradle.api.tasks.testing.Test")
-                            && (task.outcome.equals("success") || task.outcome.equals("failed"))
-                    )
+                    .filter(task -> excludedTaskTypes.stream().noneMatch(prefix -> task.type.startsWith(prefix)))
+                    .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
                         taskCount.incrementAndGet();
                         add(taskTypeTimes, task.type, task.finishTime - task.startTime);
