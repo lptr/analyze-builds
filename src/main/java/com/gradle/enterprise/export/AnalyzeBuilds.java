@@ -324,6 +324,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 this.path = path;
                 this.startTime = startTime;
             }
+
+            // We did encounter a task that did not have an outcome somehow in GE scans
+            // let's not have that fail the process
+            public boolean isComplete() {
+                return finishTime >= startTime && outcome != null;
+            }
         }
 
         private ProcessTaskEvents(String buildId, int maxWorkers, List<String> excludedTaskTypes) {
@@ -376,6 +382,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
+                    .filter(TaskInfo::isComplete)
                     .filter(task -> excludedTaskTypes.stream().noneMatch(prefix -> task.type.startsWith(prefix)))
                     .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
