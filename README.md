@@ -47,3 +47,58 @@ Use `--help` to check all the options available.
 $ ./gradlew :run --args="..."
 ```
 
+## Example output
+
+```text
+Connecting to GE server at https://ge.gradle.org/
+Querying builds since Jan 21, 2022, 1:48:20 PM
+Filtering builds by:
+ - include projects 'gradle'
+ - include tags 'LOCAL'
+ - not filtering by requested tasks
+Filtering tasks by:
+ - exclude task type prefixes 'org.gradle.api.tasks.testing.Test'
+Finished querying builds, found 111
+Statistics for 8 builds with 162 tasks
+
+Wall-clock time spent running n tasks concurrently:
+1: 697098 ms
+2: 13226 ms
+3: 22307 ms
+4: 2896 ms
+5: 658 ms
+
+Cumlative build time broken down by task type:
+org.gradle.api.DefaultTask: 2 ms
+org.gradle.api.internal.runtimeshaded.PackageListGenerator: 5365 ms
+org.gradle.api.publish.maven.tasks.GenerateMavenPom: 38 ms
+org.gradle.api.publish.maven.tasks.PublishToMavenRepository: 654 ms
+org.gradle.api.publish.tasks.GenerateModuleMetadata: 249 ms
+...
+
+Cumlative build time broken down by task path:
+:antlr:classes: 0 ms
+:antlr:parameterNamesIndex: 204 ms
+:base-services:createBuildReceipt: 204 ms
+:base-services:jar: 1292 ms
+:basics:inspectClassesForKotlinIC: 25 ms
+...
+
+Max workers:
+1: 0 builds
+2: 0 builds
+3: 0 builds
+4: 0 builds
+5: 3 builds
+6: 0 builds
+7: 0 builds
+8: 0 builds
+9: 0 builds
+10: 0 builds
+11: 0 builds
+12: 0 builds
+13: 0 builds
+14: 0 builds
+15: 0 builds
+16: 5 builds
+```
