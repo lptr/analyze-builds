@@ -38,7 +38,8 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.FormatStyle;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BinaryOperator;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -71,33 +74,48 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--api-key", description = "Export API access key, can be set via EXPORT_API_ACCESS_KEY environment variable")
     private String exportApiAccessKey = System.getenv("EXPORT_API_ACCESS_KEY");
 
-    @Option(names = "--projects", split = ",")
-    private List<String> projectNames = Arrays.asList("gradle");
-
     @Option(names = "--max-concurrency", description = "Maximum number of build scans streamed concurrently")
     private int maxBuildScansStreamedConcurrently = 30;
 
-    @Option(names = "--load-from", description = "File to load build IDs from")
+    @Option(names = "--builds", split = ",", description = "Comma-separated list of build IDs to process")
+    private List<String> builds;
+
+    @Option(names = "--load-builds-from", description = "File to load build IDs from (one ID per line); ignored when --builds is specified")
     private File buildInputFile;
 
-    @Option(names = "--save-to", description = "File to save build IDs to")
+    @Option(names = "--save-builds-to", description = "File to save build IDs to")
     private File buildOutputFile;
 
-    @Option(names = "--query-since", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --load-from is specified", converter = DurationConverter.class)
+    @Option(names = "--query-since", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --builds or --load-builds-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
-    @Option(names = "--include-requested-tasks", description = "Inlcude only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
-    private Pattern includeRequestedTasks = Pattern.compile(".*");
+    @Option(names = "--include-project", description = "Comma-separated list of projects to include")
+    private List<String> includeProjects;
+
+    @Option(names = "--exclude-project", description = "Comma-separated list of projects to exclude")
+    private List<String> excludeProjects;
+
+    @Option(names = "--include-tag", description = "Comma-separated list of tags to include")
+    private List<String> includeTags;
+
+    @Option(names = "--exclude-tag", description = "Comma-separated list of tags to exclude")
+    private List<String> excludeTags;
+
+    @Option(names = "--include-requested-tasks", description = "Include only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
+    private Pattern includeRequestedTasks;
 
     @Option(names = "--exclude-requested-tasks", description = "Exclude builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
-    private Pattern excludeRequestedTasks = Pattern.compile("(?!.*)");
+    private Pattern excludeRequestedTasks;
+
+    @Option(names = "--include-task-type", description = "Include only tasks with FQCNs starting with the given pattern")
+    private List<String> includeTaskTypes;
 
     @Option(names = "--exclude-task-type", description = "Exclude tasks with FQCNs starting with the given pattern")
-    private List<String> excludedTaskTypes = ImmutableList.of();
+    private List<String> excludeTaskTypes;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         int exitCode = new CommandLine(new AnalyzeBuilds()).execute(args);
         System.exit(exitCode);
     }
@@ -126,17 +144,17 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private void processEvents(OkHttpClient httpClient) throws Exception {
-        System.out.printf("Connecting to GE server at %s, fetching info about projects: %s%n", serverUrl, projectNames.stream().collect(Collectors.joining(", ")));
+        System.out.printf("Connecting to GE server at %s, fetching info about projects: %s%n", serverUrl, includeProjects.stream().collect(Collectors.joining(", ")));
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
-        Stream<String> builds = buildInputFile == null
-                ? queryBuildsFromPast(since, eventSourceFactory)
-                : loadBuildsFromFile(buildInputFile);
-        BuildStatistics composedStats = builds
+        Stream<String> buildIds = builds != null ? builds.stream()
+                : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
+                : queryBuildsFromPast(since, eventSourceFactory);
+        BuildStatistics composedStats = buildIds
                 .parallel()
-                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames, includeRequestedTasks, excludeRequestedTasks)))
+                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, includeProjects, excludeProjects, includeTags, excludeTags, includeRequestedTasks, excludeRequestedTasks)))
                 .map(future -> future.thenCompose(result -> {
                     if (result.matches) {
-                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, excludedTaskTypes));
+                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, includeTaskTypes, excludeTaskTypes));
                     } else {
                         return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
                     }
@@ -190,7 +208,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 .withZone(ZoneId.systemDefault())
                 .format(since));
         StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
-        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(eventSourceFactory, buildQueue);
+        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(buildQueue);
         eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
         return buildQueue.stream();
     }
@@ -220,12 +238,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private static class FilterBuildsByBuildTool extends PrintFailuresEventSourceListener {
-        private final EventSource.Factory eventSourceFactory;
         private final StreamableQueue<String> buildQueue;
         private final AtomicInteger buildCount = new AtomicInteger(0);
 
-        private FilterBuildsByBuildTool(EventSource.Factory eventSourceFactory, StreamableQueue<String> buildQueue) {
-            this.eventSourceFactory = eventSourceFactory;
+        private FilterBuildsByBuildTool(StreamableQueue<String> buildQueue) {
             this.buildQueue = buildQueue;
         }
 
@@ -282,7 +298,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         private final String buildId;
-        private final List<String> projectNames;
+        private final List<String> includeProjects;
+        private final List<String> excludeProjects;
+        private final List<String> includeTags;
+        private final List<String> excludeTags;
         private final Pattern includeRequestedTasks;
         private final Pattern excludeRequestedTasks;
 
@@ -291,18 +310,27 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         private List<String> requestedTasks;
         private int maxWorkers;
 
-        private ProcessBuildInfo(String buildId, List<String> projectNames, Pattern includeRequestedTasks, Pattern excludeRequestedTasks) {
+        private ProcessBuildInfo(
+                String buildId,
+                List<String> includeProjects,
+                List<String> excludeProjects,
+                List<String> includeTags,
+                List<String> excludeTags,
+                Pattern includeRequestedTasks,
+                Pattern excludeRequestedTasks
+        ) {
             this.buildId = buildId;
-            this.projectNames = projectNames;
+            this.includeProjects = includeProjects;
+            this.excludeProjects = excludeProjects;
+            this.includeTags = includeTags;
+            this.excludeTags = excludeTags;
             this.includeRequestedTasks = includeRequestedTasks;
             this.excludeRequestedTasks = excludeRequestedTasks;
         }
 
         @Override
         public void process(@Nullable String id, @Nonnull JsonNode eventJson) {
-            long timestamp = eventJson.get("timestamp").asLong();
             String eventType = eventJson.get("type").get("eventType").asText();
-            int delta;
             switch (eventType) {
                 case "ProjectStructure":
                     String rootProject = eventJson.get("data").get("rootProjectName").asText();
@@ -325,27 +353,28 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public Result complete() {
-            boolean matches;
-            BuildStatistics stats;
-            if (!projectNames.stream().anyMatch(rootProjects::contains)) {
-                matches = false;
-            } else if (!tags.contains("LOCAL")) {
-                matches = false;
-            } else if (!requestedTasks.stream().anyMatch(task -> includeRequestedTasks.matcher(task).matches())) {
-                matches = false;
-            } else if (requestedTasks.stream().anyMatch(task -> excludeRequestedTasks.matcher(task).matches())) {
-                matches = false;
-            } else {
-                System.out.println("Found build " + buildId);
-                matches = true;
-            }
+            boolean matches = true
+                    && matches(rootProjects, includeProjects, excludeProjects, pattern -> pattern::contains)
+                    && matches(tags, includeTags, excludeTags, pattern -> pattern::contains)
+                    && matches(requestedTasks, includeRequestedTasks, excludeRequestedTasks, pattern -> task -> pattern.matcher(task).matches());
             return new Result(buildId, matches, maxWorkers);
         }
+    }
+
+    private static <T> boolean matches(Collection<String> elements, T includePattern, T excludePattern, Function<T, Predicate<String>> matcher) {
+        if (includePattern != null && !elements.stream().anyMatch(matcher.apply(includePattern))) {
+            return false;
+        }
+        if (excludePattern != null && elements.stream().anyMatch(matcher.apply(excludePattern))) {
+            return false;
+        }
+        return true;
     }
 
     private static class ProcessTaskEvents implements BuildEventProcessor<BuildStatistics> {
         private final String buildId;
         private final int maxWorkers;
+        private final List<String> includeTaskTypes;
         private final List<String> excludedTaskTypes;
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
@@ -363,9 +392,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             }
         }
 
-        private ProcessTaskEvents(String buildId, int maxWorkers, List<String> excludedTaskTypes) {
+        private ProcessTaskEvents(String buildId, int maxWorkers, List<String> includeTaskTypes, List<String> excludedTaskTypes) {
             this.buildId = buildId;
             this.maxWorkers = maxWorkers;
+            this.includeTaskTypes = includeTaskTypes;
             this.excludedTaskTypes = excludedTaskTypes;
         }
 
@@ -374,7 +404,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             long timestamp = eventJson.get("timestamp").asLong();
             String eventType = eventJson.get("type").get("eventType").asText();
             long eventId = eventJson.get("data").get("id").asLong();
-            int delta;
             switch (eventType) {
                 case "TaskStarted":
                     tasks.put(eventId, new TaskInfo(
@@ -401,7 +430,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
-                    .filter(task -> excludedTaskTypes.stream().noneMatch(prefix -> task.type.startsWith(prefix)))
+                    .filter(task -> matches(Collections.singleton(task.type), includeTaskTypes, excludedTaskTypes, pattern -> task.type::startsWith))
                     .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
                         taskCount.incrementAndGet();
@@ -481,7 +510,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private interface BuildEventProcessor<T> {
-        default void initialize(@Nonnull Response response) {
+        default void initialize() {
         }
 
         void process(@Nullable String id, @Nonnull JsonNode data);
@@ -512,7 +541,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         @Override
         public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
             try {
-                processor.initialize(response);
+                processor.initialize();
             } catch (Exception e) {
                 result.completeExceptionally(new BuildEventProcessingException(buildId, "initialize processing", e));
             }
@@ -631,10 +660,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 DefaultBuildStatistics other = (DefaultBuildStatistics) o;
                 ImmutableList<String> buildIds = ImmutableList.<String>builder().addAll(this.buildIds).addAll(other.buildIds).build();
                 int taskCount = this.taskCount + other.taskCount;
-                ImmutableSortedMap<String, Long> taskTypeTimes = mergeMaps(this.taskTypeTimes, other.taskTypeTimes, 0L, (aV, bV) -> aV + bV);
-                ImmutableSortedMap<String, Long> taskPathTimes = mergeMaps(this.taskPathTimes, other.taskPathTimes, 0L, (aV, bV) -> aV + bV);
-                ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(this.workerTimes, other.workerTimes, 0L, (aV, bV) -> aV + bV);
-                ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(this.maxWorkers, other.maxWorkers, 0, (aV, bV) -> aV + bV);
+                ImmutableSortedMap<String, Long> taskTypeTimes = mergeMaps(this.taskTypeTimes, other.taskTypeTimes, 0L, Long::sum);
+                ImmutableSortedMap<String, Long> taskPathTimes = mergeMaps(this.taskPathTimes, other.taskPathTimes, 0L, Long::sum);
+                ImmutableSortedMap<Integer, Long> workerTimes = mergeMaps(this.workerTimes, other.workerTimes, 0L, Long::sum);
+                ImmutableSortedMap<Integer, Integer> maxWorkers = mergeMaps(this.maxWorkers, other.maxWorkers, 0, Integer::sum);
                 return new DefaultBuildStatistics(buildIds, taskCount, taskTypeTimes, taskPathTimes, workerTimes, maxWorkers);
             } else {
                 return this;
@@ -679,21 +708,21 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     private static class HttpUrlConverter implements ITypeConverter<HttpUrl> {
         @Override
-        public HttpUrl convert(String value) throws Exception {
+        public HttpUrl convert(String value) {
             return HttpUrl.parse(value);
         }
     }
 
     private static class DurationConverter implements ITypeConverter<Duration> {
         @Override
-        public Duration convert(String value) throws Exception {
+        public Duration convert(String value) {
             return Duration.parse(value);
         }
     }
 
     private static class PatternConverter implements ITypeConverter<Pattern> {
         @Override
-        public Pattern convert(String value) throws Exception {
+        public Pattern convert(String value) {
             return Pattern.compile(value);
         }
     }
