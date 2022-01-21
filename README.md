@@ -18,8 +18,15 @@ This tool uses version 2 of the Export API, available since Gradle Enterprise 20
 You can download the latest release from [releases](https://github.com/lptr/analyze-builds/releases). Once extracted, use the shell script or batch file in the `bin` directory to invoke the tool:
 
 ```bash
-$ bin/analyze-builds --server https://ge.gradle.org --api-key ... --include-project gradle --include-tag LOCAL --exclude-task-type org.gradle.api.tasks.testing.Test
+$ bin/analyze-builds \
+    --server https://ge.gradle.org \
+    --api-key ... \
+    --include-project gradle \
+    --include-tag LOCAL \
+    --exclude-task-type org.gradle.api.tasks.testing.Test
 ```
+
+Use `--help` to check all the options available.
 
 ### Using Gradle to build the tool from source and invoke it
 
