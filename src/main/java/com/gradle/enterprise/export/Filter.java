@@ -21,7 +21,7 @@ interface Filter {
 
             @Override
             protected String format(Pattern pattern) {
-                return pattern.pattern();
+                return "matching regex /" + pattern.pattern() + "/";
             }
         };
     }
@@ -71,20 +71,22 @@ interface Filter {
         @Override
         public String toString() {
             if (includes == null && excludes == null) {
-                return "Not filtering by " + title;
+                return "not filtering by " + title;
             } else {
-                StringBuilder sb = new StringBuilder("Filtering by ");
-                sb.append(title);
-                sb.append(": ");
+                StringBuilder sb = new StringBuilder();
                 if (includes != null) {
                     sb.append("include ");
+                    sb.append(title);
+                    sb.append(" ");
                     sb.append(format(includes));
                 }
                 if (excludes != null) {
                     if (includes != null) {
-                        sb.append(", ");
+                        sb.append("; ");
                     }
                     sb.append("exclude ");
+                    sb.append(title);
+                    sb.append(" ");
                     sb.append(format(excludes));
                 }
                 return sb.toString();

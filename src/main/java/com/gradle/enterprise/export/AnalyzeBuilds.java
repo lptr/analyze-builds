@@ -1,8 +1,11 @@
 package com.gradle.enterprise.export;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterators;
@@ -20,6 +23,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSources;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -58,10 +62,13 @@ import static java.time.Instant.now;
 @Command(
         name = "analyze",
         description = "Analyze GE data",
-        mixinStandardHelpOptions = true
+        mixinStandardHelpOptions = true,
+        customSynopsis = "analyze --server <URL> [OPTIONS...]"
 )
 public final class AnalyzeBuilds implements Callable<Integer> {
-    @Option(names = "--server", required = true, description = "GE server URL", converter = HttpUrlConverter.class)
+    private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(AnalyzeBuilds.class);
+
+    @Option(names = "--server", paramLabel = "<URL>", required = true, description = "GE server URL", converter = HttpUrlConverter.class)
     private HttpUrl serverUrl;
 
     @Option(names = "--api-key", paramLabel = "<key>", description = "Export API access key, can be set via EXPORT_API_ACCESS_KEY environment variable")
@@ -106,6 +113,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--exclude-task-type", paramLabel = "<FQCN>", description = "Exclude tasks with FQCNs starting with the given pattern")
     private List<String> excludeTaskTypes;
 
+    @Option(names = "--verbose", description = "Enable verbose output")
+    private boolean verbose;
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) {
@@ -115,6 +125,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        LOGGER.setLevel(verbose ? Level.DEBUG : Level.INFO);
+        if (Strings.isNullOrEmpty(exportApiAccessKey)) {
+            throw new RuntimeException("Export API access key must be specified");
+        }
         OkHttpClient httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
@@ -137,7 +151,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private void processEvents(OkHttpClient httpClient) throws Exception {
-        System.out.printf("Connecting to GE server at %s%n", serverUrl);
+        LOGGER.info("Connecting to GE server at {}", serverUrl);
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
@@ -145,15 +159,15 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Filter projectFilter = Filter.with("projects", includeProjects, excludeProjects);
         Filter tagFilter = Filter.with("tags", includeTags, excludeTags);
         Filter requestedTaskFilter = Filter.with("requested tasks", includeRequestedTasks, excludeRequestedTasks);
-        Filter taskTypeFilter = Filter.with("task types", includeTaskTypes, excludeTaskTypes);
+        Filter taskTypeFilter = Filter.with("task type prefixes", includeTaskTypes, excludeTaskTypes);
 
-        System.out.println("Filtering builds by:");
-        System.out.println(" - " + projectFilter);
-        System.out.println(" - " + tagFilter);
-        System.out.println(" - " + requestedTaskFilter);
+        LOGGER.info("Filtering builds by:");
+        LOGGER.info(" - {}", projectFilter);
+        LOGGER.info(" - {}", tagFilter);
+        LOGGER.info(" - {}", requestedTaskFilter);
 
-        System.out.println("Filtering tasks by:");
-        System.out.println(" - " + taskTypeFilter);
+        LOGGER.info("Filtering tasks by:");
+        LOGGER.info(" - {}", taskTypeFilter);
 
         BuildStatistics composedStats = buildIds
                 .parallel()
@@ -166,7 +180,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                     }
                 }))
                 .map(future -> future.exceptionally(error -> {
-                            error.printStackTrace();
+                            LOGGER.error("Couldn't process build, skipping", error);
                             return BuildStatistics.EMPTY;
                         })
                 )
@@ -183,7 +197,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         composedStats.print();
 
         if (buildOutputFile != null) {
-            System.out.printf("Storing build IDs in %s%n", buildOutputFile);
+            LOGGER.info("Storing build IDs in {}", buildOutputFile);
             buildOutputFile.getParentFile().mkdirs();
             try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(buildOutputFile.toPath(), StandardCharsets.UTF_8))) {
                 composedStats.getBuildIds()
@@ -199,9 +213,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private static Stream<String> loadBuildsFromFile(File file) {
-        System.out.println("Fetching build IDs from " + file);
         try {
-            return Files.readAllLines(file.toPath(), StandardCharsets.UTF_8).stream();
+            List<String> buildIds = Files.readAllLines(file.toPath(), StandardCharsets.UTF_8);
+            LOGGER.info("Loaded {} build IDs from {}", buildIds.size(), file);
+            return buildIds.stream();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -210,7 +225,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Nonnull
     private Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
         Instant since = now().minus(duration);
-        System.out.printf("Querying builds since %s%n", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
+        LOGGER.info("Querying builds since {}", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
                 .withZone(ZoneId.systemDefault())
                 .format(since));
         StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
@@ -253,7 +268,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
-            System.out.println("Streaming builds...");
+            LOGGER.debug("Streaming builds...");
         }
 
         @Override
@@ -273,7 +288,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public void onClosed(@Nonnull EventSource eventSource) {
-            System.out.println("Finished querying builds, found " + buildCount.get());
+            LOGGER.info("Finished querying builds, found {}", buildCount.get());
             try {
                 buildQueue.close();
             } catch (InterruptedException e) {
@@ -409,7 +424,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public BuildStatistics complete() {
-            System.out.println("Finished processing build " + buildId);
+            LOGGER.debug("Finished processing build {}", buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
@@ -466,7 +481,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
             @Override
             public void print() {
-                System.out.println("No matching builds found");
+                LOGGER.warn("No matching builds found");
             }
 
             @Override
@@ -513,28 +528,28 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public void print() {
-            System.out.println("Statistics for " + buildIds.size() + " builds with " + taskCount + " tasks");
+            LOGGER.info("Statistics for {} builds with {} tasks", buildIds.size(), taskCount);
 
-            System.out.println();
-            System.out.println("Concurrency levels:");
+            LOGGER.info("");
+            LOGGER.info("Concurrency levels:");
             int maxConcurrencyLevel = workerTimes.lastKey();
-            for (int concurrencyLevel = maxConcurrencyLevel; concurrencyLevel >= 1; concurrencyLevel--) {
-                System.out.printf("%d: %d ms%n", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
+            for (int concurrencyLevel = 1; concurrencyLevel <= maxConcurrencyLevel; concurrencyLevel++) {
+                LOGGER.info("{}: {} ms", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
             }
 
-            System.out.println();
-            System.out.println("Task times by type:");
-            taskTypeTimes.forEach((taskType, count) -> System.out.printf("%s: %d%n", taskType, count));
+            LOGGER.info("");
+            LOGGER.info("Task times by type:");
+            taskTypeTimes.forEach((taskType, count) -> LOGGER.info("{}: {}", taskType, count));
 
-            System.out.println();
-            System.out.println("Task times by path:");
-            taskPathTimes.forEach((taskPath, count) -> System.out.printf("%s: %d%n", taskPath, count));
+            LOGGER.info("");
+            LOGGER.info("Task times by path:");
+            taskPathTimes.forEach((taskPath, count) -> LOGGER.info("{}: {}", taskPath, count));
 
-            System.out.println();
-            System.out.println("Max workers:");
+            LOGGER.info("");
+            LOGGER.info("Max workers:");
             int mostWorkers = maxWorkers.lastKey();
-            for (int maxWorker = mostWorkers; maxWorker >= 1; maxWorker--) {
-                System.out.printf("%d: %d builds%n", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
+            for (int maxWorker = 1; maxWorker <= mostWorkers; maxWorker++) {
+                LOGGER.info("{}: {} builds", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
             }
         }
 
