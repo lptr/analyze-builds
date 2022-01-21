@@ -528,27 +528,25 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public void print() {
-            LOGGER.info("Statistics for {} builds with {} tasks", buildIds.size(), taskCount);
+            LOGGER.info("Statistics for {} builds matching criteria with {} tasks", buildIds.size(), taskCount);
 
             LOGGER.info("");
-            LOGGER.info("Concurrency levels:");
-            int maxConcurrencyLevel = workerTimes.lastKey();
-            for (int concurrencyLevel = 1; concurrencyLevel <= maxConcurrencyLevel; concurrencyLevel++) {
+            LOGGER.info("Wall-clock time spent running n tasks concurrently:");
+            for (int concurrencyLevel = 1; concurrencyLevel <= workerTimes.lastKey(); concurrencyLevel++) {
                 LOGGER.info("{}: {} ms", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
             }
 
             LOGGER.info("");
-            LOGGER.info("Task times by type:");
-            taskTypeTimes.forEach((taskType, count) -> LOGGER.info("{}: {}", taskType, count));
+            LOGGER.info("Cumlative build time broken down by task type:");
+            taskTypeTimes.forEach((taskType, count) -> LOGGER.info("{}: {} ms", taskType, count));
 
             LOGGER.info("");
-            LOGGER.info("Task times by path:");
-            taskPathTimes.forEach((taskPath, count) -> LOGGER.info("{}: {}", taskPath, count));
+            LOGGER.info("Cumlative build time broken down by task path:");
+            taskPathTimes.forEach((taskPath, count) -> LOGGER.info("{}: {} ms", taskPath, count));
 
             LOGGER.info("");
             LOGGER.info("Max workers:");
-            int mostWorkers = maxWorkers.lastKey();
-            for (int maxWorker = 1; maxWorker <= mostWorkers; maxWorker++) {
+            for (int maxWorker = 1; maxWorker <= maxWorkers.lastKey(); maxWorker++) {
                 LOGGER.info("{}: {} builds", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
             }
         }
