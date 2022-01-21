@@ -1,5 +1,7 @@
 # Gradle Export API Parallelism extractor
 
+![Build](https://github.com/lptr/analyze-builds/actions/workflows/build.yml/badge.svg)
+
 Looks for local builds and tries to determine how parallel they are runnig.
 The output shows how much time we spent runing on 1, 2, 3 etc. threads in parallel.
 
