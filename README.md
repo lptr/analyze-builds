@@ -13,7 +13,7 @@ Currently the following data is collected:
 
 ### Limitations
 
-The tool only processes task executions. It does not include worker API work and artifact transform executions, as build scans contain no information about these work types. For vanilla Java and Kotlin builds this shouldn't be a problem. It will distort results when measuring Android builds that rely on both transforms and the worker API.
+The tool only processes task executions. It does not include worker API work and artifact transform executions, as build scans contain no information about these work types. For vanilla Java and Kotlin builds this typically shouldn't be a problem. It will distort results when measuring Android builds that rely on both transforms and the worker API.
 
 The resutls only include a breakdown of the _execution phase_ of the Gradle build. They don't include the overhead added by Gradle's configuration phase, nor any IDE overhead. When considering actual developer experience these overheads should be accounted for.
 
