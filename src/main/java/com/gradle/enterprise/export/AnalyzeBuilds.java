@@ -86,8 +86,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--query-since", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --load-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
-    @Option(names = "--match-requested-tasks", description = "Inlcude only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
-    private Pattern requestedTaskFilter = Pattern.compile(".*");
+    @Option(names = "--include-requested-tasks", description = "Inlcude only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
+    private Pattern includeRequestedTasks = Pattern.compile(".*");
+
+    @Option(names = "--exclude-requested-tasks", description = "Exclude builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
+    private Pattern excludeRequestedTasks = Pattern.compile("(?!.*)");
 
     @Option(names = "--exclude-task-type", description = "Exclude tasks with FQCNs starting with the given pattern")
     private List<String> excludedTaskTypes = ImmutableList.of();
@@ -130,7 +133,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 : loadBuildsFromFile(buildInputFile);
         BuildStatistics composedStats = builds
                 .parallel()
-                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames, requestedTaskFilter)))
+                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames, includeRequestedTasks, excludeRequestedTasks)))
                 .map(future -> future.thenCompose(result -> {
                     if (result.matches) {
                         return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, excludedTaskTypes));
@@ -219,6 +222,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     private static class FilterBuildsByBuildTool extends PrintFailuresEventSourceListener {
         private final EventSource.Factory eventSourceFactory;
         private final StreamableQueue<String> buildQueue;
+        private final AtomicInteger buildCount = new AtomicInteger(0);
 
         private FilterBuildsByBuildTool(EventSource.Factory eventSourceFactory, StreamableQueue<String> buildQueue) {
             this.eventSourceFactory = eventSourceFactory;
@@ -236,6 +240,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             JsonNode buildToolJson = json.get("toolType");
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
                 String buildId = json.get("buildId").asText();
+                buildCount.incrementAndGet();
                 try {
                     buildQueue.put(buildId);
                 } catch (InterruptedException e) {
@@ -246,7 +251,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         @Override
         public void onClosed(@Nonnull EventSource eventSource) {
-            System.out.println("Finished querying builds");
+            System.out.println("Finished querying builds, found " + buildCount.get());
             try {
                 buildQueue.close();
             } catch (InterruptedException e) {
@@ -278,17 +283,19 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         private final String buildId;
         private final List<String> projectNames;
-        private final Pattern requestedTaskFilter;
+        private final Pattern includeRequestedTasks;
+        private final Pattern excludeRequestedTasks;
 
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
         private List<String> requestedTasks;
         private int maxWorkers;
 
-        private ProcessBuildInfo(String buildId, List<String> projectNames, Pattern requestedTaskFilter) {
+        private ProcessBuildInfo(String buildId, List<String> projectNames, Pattern includeRequestedTasks, Pattern excludeRequestedTasks) {
             this.buildId = buildId;
             this.projectNames = projectNames;
-            this.requestedTaskFilter = requestedTaskFilter;
+            this.includeRequestedTasks = includeRequestedTasks;
+            this.excludeRequestedTasks = excludeRequestedTasks;
         }
 
         @Override
@@ -324,7 +331,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 matches = false;
             } else if (!tags.contains("LOCAL")) {
                 matches = false;
-            } else if (!requestedTasks.stream().anyMatch(task -> requestedTaskFilter.matcher(task).matches())) {
+            } else if (!requestedTasks.stream().anyMatch(task -> includeRequestedTasks.matcher(task).matches())) {
+                matches = false;
+            } else if (requestedTasks.stream().anyMatch(task -> excludeRequestedTasks.matcher(task).matches())) {
                 matches = false;
             } else {
                 System.out.println("Found build " + buildId);
