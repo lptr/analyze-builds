@@ -7,21 +7,21 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.gradle.enterprise.export.util.DurationConverter;
+import com.gradle.enterprise.export.util.HttpUrlConverter;
+import com.gradle.enterprise.export.util.PatternConverter;
+import com.gradle.enterprise.export.util.StreamableQueue;
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
-import okhttp3.ResponseBody;
 import okhttp3.sse.EventSource;
-import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.ITypeConverter;
 import picocli.CommandLine.Option;
 
 import javax.annotation.Nonnull;
@@ -45,11 +45,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BinaryOperator;
@@ -472,107 +470,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         map.compute(key, (k, value) -> (value == null ? 0 : value) + delta);
     }
 
-    private static <K extends Comparable<K>, V> ImmutableSortedMap<K, V> mergeMaps(Map<K, V> a, Map<K, V> b, V zero, BinaryOperator<V> add) {
-        ImmutableSortedMap.Builder<K, V> merged = ImmutableSortedMap.naturalOrder();
-        for (K key : Sets.union(a.keySet(), b.keySet())) {
-            merged.put(key, add.apply(a.getOrDefault(key, zero), b.getOrDefault(key, zero)));
-        }
-        return merged.build();
-    }
-
-    private static class PrintFailuresEventSourceListener extends EventSourceListener {
-        @Override
-        public void onFailure(@Nonnull EventSource eventSource, @Nullable Throwable t, @Nullable Response response) {
-            if (t != null) {
-                System.err.println("FAILED: " + t.getMessage());
-                t.printStackTrace();
-            }
-            if (response != null) {
-                System.err.println("Bad response: " + response);
-                System.err.println("Response body: " + getResponseBody(response));
-            }
-            eventSource.cancel();
-            this.onClosed(eventSource);
-        }
-
-        @Nullable
-        private String getResponseBody(Response response) {
-            try {
-                ResponseBody body = response.body();
-                if (body == null) {
-                    return null;
-                }
-                return body.string();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    private interface BuildEventProcessor<T> {
-        default void initialize() {
-        }
-
-        void process(@Nullable String id, @Nonnull JsonNode data);
-
-        T complete();
-    }
-
-    private static class BuildEventProcessingException extends Exception {
-        public BuildEventProcessingException(String buildId, String stage, Throwable cause) {
-            super(String.format("Failed to %s build %s", stage, buildId), cause);
-        }
-    }
-
-    private static class BuildEventProcessingListener<T> extends PrintFailuresEventSourceListener {
-        private final String buildId;
-        private final BuildEventProcessor<T> processor;
-        private final CompletableFuture<T> result = new CompletableFuture<>();
-
-        public BuildEventProcessingListener(String buildId, BuildEventProcessor<T> processor) {
-            this.buildId = buildId;
-            this.processor = processor;
-        }
-
-        public CompletableFuture<T> getResult() {
-            return result;
-        }
-
-        @Override
-        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
-            try {
-                processor.initialize();
-            } catch (Exception e) {
-                result.completeExceptionally(new BuildEventProcessingException(buildId, "initialize processing", e));
-            }
-        }
-
-        @Override
-        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
-            if (!result.isDone()) {
-                if ("BuildEvent".equals(type)) {
-                    try {
-                        JsonNode jsonData = MAPPER.readTree(data);
-                        processor.process(id, jsonData);
-                    } catch (Exception e) {
-                        result.completeExceptionally(new BuildEventProcessingException(buildId, "process event (" + data + ") for", e));
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void onClosed(@Nonnull EventSource eventSource) {
-            if (!result.isDone()) {
-                try {
-                    result.complete(processor.complete());
-                } catch (Exception e) {
-                    result.completeExceptionally(new BuildEventProcessingException(buildId, "complete processing", e));
-                }
-            }
-        }
-    }
-
     private interface BuildStatistics {
         public static final BuildStatistics EMPTY = new BuildStatistics() {
             @Override
@@ -669,61 +566,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 return this;
             }
         }
-    }
 
-    private static class StreamableQueue<T> extends ForwardingBlockingQueue<T> {
-        private final BlockingQueue<T> delegate;
-        private final T poison;
-
-        public StreamableQueue(T poison) {
-            this.delegate = new LinkedBlockingQueue<>();
-            this.poison = poison;
-        }
-
-        @Override
-        protected BlockingQueue<T> delegate() {
-            return delegate;
-        }
-
-        public void close() throws InterruptedException {
-            put(poison);
-        }
-
-        @Override
-        public Stream<T> stream() {
-            return Stream.generate(() -> {
-                        try {
-                            T value = take();
-                            if (value == poison) {
-                                put(poison);
-                            }
-                            return value;
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                    })
-                    .takeWhile(value -> value != poison);
-        }
-    }
-
-    private static class HttpUrlConverter implements ITypeConverter<HttpUrl> {
-        @Override
-        public HttpUrl convert(String value) {
-            return HttpUrl.parse(value);
-        }
-    }
-
-    private static class DurationConverter implements ITypeConverter<Duration> {
-        @Override
-        public Duration convert(String value) {
-            return Duration.parse(value);
-        }
-    }
-
-    private static class PatternConverter implements ITypeConverter<Pattern> {
-        @Override
-        public Pattern convert(String value) {
-            return Pattern.compile(value);
+        private static <K extends Comparable<K>, V> ImmutableSortedMap<K, V> mergeMaps(Map<K, V> a, Map<K, V> b, V zero, BinaryOperator<V> add) {
+            ImmutableSortedMap.Builder<K, V> merged = ImmutableSortedMap.naturalOrder();
+            for (K key : Sets.union(a.keySet(), b.keySet())) {
+                merged.put(key, add.apply(a.getOrDefault(key, zero), b.getOrDefault(key, zero)));
+            }
+            return merged.build();
         }
     }
 }
