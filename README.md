@@ -2,7 +2,7 @@
 
 ![Build](https://github.com/lptr/analyze-builds/actions/workflows/build.yml/badge.svg)
 
-Queries builds from a [Gradle Enterprise](https://gradle.com) server via the [Export API](https://docs.gradle.com/enterprise/export-api/), filters them and summarizes task execution and parallelism data.
+Queries build scan data from a [Gradle Enterprise](https://gradle.com) server via the [Export API](https://docs.gradle.com/enterprise/export-api/), filters them and summarizes task execution and parallelism data.
 
 ## Minimum Gradle Enterprise version
 
