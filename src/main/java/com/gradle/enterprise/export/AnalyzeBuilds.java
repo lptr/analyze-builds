@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ForwardingBlockingQueue;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -51,6 +52,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BinaryOperator;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -83,6 +85,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     @Option(names = "--query-since", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --load-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
+
+    @Option(names = "--match-requested-tasks", description = "Inlcude only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
+    private Pattern requestedTaskFilter = Pattern.compile(".*");
 
     @Option(names = "--exclude-task-type", description = "Exclude tasks with FQCNs starting with the given pattern")
     private List<String> excludedTaskTypes = ImmutableList.of();
@@ -125,7 +130,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 : loadBuildsFromFile(buildInputFile);
         BuildStatistics composedStats = builds
                 .parallel()
-                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames)))
+                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames, requestedTaskFilter)))
                 .map(future -> future.thenCompose(result -> {
                     if (result.matches) {
                         return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, excludedTaskTypes));
@@ -199,7 +204,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @SuppressWarnings("ConstantConditions")
     private Request requestBuildInfo(String buildId) {
         return new Request.Builder()
-                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes"))
+                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes,BuildRequestedTasks"))
                 .build();
     }
 
@@ -273,13 +278,17 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         private final String buildId;
         private final List<String> projectNames;
+        private final Pattern requestedTaskFilter;
+
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
+        private List<String> requestedTasks;
         private int maxWorkers;
 
-        private ProcessBuildInfo(String buildId, List<String> projectNames) {
+        private ProcessBuildInfo(String buildId, List<String> projectNames, Pattern requestedTaskFilter) {
             this.buildId = buildId;
             this.projectNames = projectNames;
+            this.requestedTaskFilter = requestedTaskFilter;
         }
 
         @Override
@@ -299,6 +308,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 case "BuildModes":
                     maxWorkers = eventJson.get("data").get("maxWorkers").asInt();
                     break;
+                case "BuildRequestedTasks":
+                    this.requestedTasks = ImmutableList.copyOf(Iterators.transform(eventJson.get("data").get("requested").elements(), JsonNode::asText));
+                    break;
                 default:
                     throw new AssertionError("Unknown event type: " + eventType);
             }
@@ -311,6 +323,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             if (!projectNames.stream().anyMatch(rootProjects::contains)) {
                 matches = false;
             } else if (!tags.contains("LOCAL")) {
+                matches = false;
+            } else if (!requestedTasks.stream().anyMatch(task -> requestedTaskFilter.matcher(task).matches())) {
                 matches = false;
             } else {
                 System.out.println("Found build " + buildId);
@@ -665,6 +679,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         @Override
         public Duration convert(String value) throws Exception {
             return Duration.parse(value);
+        }
+    }
+
+    private static class PatternConverter implements ITypeConverter<Pattern> {
+        @Override
+        public Pattern convert(String value) throws Exception {
+            return Pattern.compile(value);
         }
     }
 }
