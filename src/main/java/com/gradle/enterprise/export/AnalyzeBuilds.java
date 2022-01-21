@@ -13,6 +13,7 @@ import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.gradle.enterprise.export.util.DurationConverter;
 import com.gradle.enterprise.export.util.HttpUrlConverter;
+import com.gradle.enterprise.export.util.ManifestVersionProvider;
 import com.gradle.enterprise.export.util.PatternConverter;
 import com.gradle.enterprise.export.util.StreamableQueue;
 import okhttp3.ConnectionPool;
@@ -63,7 +64,8 @@ import static java.time.Instant.now;
         name = "analyze-builds",
         description = "Analyze GE data",
         mixinStandardHelpOptions = true,
-        customSynopsis = "analyze --server <URL> [OPTIONS...]"
+        customSynopsis = "analyze --server <URL> [OPTIONS...]",
+        versionProvider = ManifestVersionProvider.class
 )
 public final class AnalyzeBuilds implements Callable<Integer> {
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(AnalyzeBuilds.class);

@@ -25,3 +25,12 @@ sourceCompatibility = '1.8'
 targetCompatibility = '1.8'
 
 mainClassName = "com.gradle.enterprise.export.AnalyzeBuilds"
+
+version = ['git', 'describe', '--tags'].execute().text.trim()
+
+jar {
+    manifest {
+        attributes("Implementation-Title": "Gradle",
+                "Implementation-Version": version)
+    }
+}
