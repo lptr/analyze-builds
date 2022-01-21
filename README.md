@@ -11,6 +11,10 @@ Currently the following data is collected:
 - distribution of build time broken down by task path,
 - distribution of the `org.gradle.workers.max` setting for the builds encountered.
 
+### Limitations
+
+The tool only processes task executions. It does not include worker API work and artifact transform executions. For vanilla Java and Kotlin builds this shouldn't be a problem. It will distort results when measuring Android builds that rely on both transforms and the worker API.
+
 ## Minimum Gradle Enterprise version
 
 This tool uses version 2 of the Export API, available since Gradle Enterprise 2021.2.
