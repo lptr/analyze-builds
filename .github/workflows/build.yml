@@ -18,11 +18,11 @@ jobs:
       - name: Build with Gradle
         uses: gradle/gradle-build-action@v2
         with:
-          arguments: build distZip
+          arguments: build
       - name: Upload artifact
         uses: "actions/upload-artifact@v2"
         with:
-          path: build/distributions/analyze-builds.zip
+          path: build/distributions/*
           if-no-files-found: error
 
   release:
