@@ -46,6 +46,7 @@ import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -122,42 +123,47 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> builds = buildInputFile == null
                 ? queryBuildsFromPast(since, eventSourceFactory)
                 : loadBuildsFromFile(buildInputFile);
-        BuildStatistics result = builds
+        BuildStatistics composedStats = builds
                 .parallel()
-                .map(buildId -> {
-                    ProcessBuildInfo projectFilter = new ProcessBuildInfo(buildId, projectNames);
-                    eventSourceFactory.newEventSource(requestBuildInfo(buildId), projectFilter);
-                    return projectFilter.getResult();
-                })
-                .map(future -> future.thenCompose(filterResult -> {
-                    if (filterResult.matches) {
-                        ProcessTaskEvents buildProcessor = new ProcessTaskEvents(filterResult.buildId, filterResult.maxWorkers, excludedTaskTypes);
-                        eventSourceFactory.newEventSource(requestTaskEvents(filterResult.buildId), buildProcessor);
-                        return buildProcessor.getResult();
+                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectNames)))
+                .map(future -> future.thenCompose(result -> {
+                    if (result.matches) {
+                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, excludedTaskTypes));
                     } else {
                         return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
                     }
                 }))
-                .map(statsResult -> {
+                .map(future -> future.exceptionally(error -> {
+                            error.printStackTrace();
+                            return BuildStatistics.EMPTY;
+                        })
+                )
+                .map(future -> {
                     try {
-                        return statsResult.get();
-                    } catch (Exception e) {
+                        return future.get();
+                    } catch (InterruptedException | ExecutionException e) {
                         throw new RuntimeException(e);
                     }
                 })
                 .reduce(BuildStatistics::merge)
                 .orElse(BuildStatistics.EMPTY);
 
-        result.print();
+        composedStats.print();
 
         if (buildOutputFile != null) {
             System.out.printf("Storing build IDs in %s%n", buildOutputFile);
             buildOutputFile.getParentFile().mkdirs();
             try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(buildOutputFile.toPath(), StandardCharsets.UTF_8))) {
-                result.getBuildIds()
+                composedStats.getBuildIds()
                         .forEach(writer::println);
             }
         }
+    }
+
+    private static <T> CompletableFuture<T> processEventSource(EventSource.Factory eventSourceFactory, String buildId, Request request, BuildEventProcessor<T> processor) {
+        BuildEventProcessingListener<T> listener = new BuildEventProcessingListener<>(buildId, processor);
+        eventSourceFactory.newEventSource(request, listener);
+        return listener.getResult();
     }
 
     private static Stream<String> loadBuildsFromFile(File file) {
@@ -244,7 +250,15 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
     }
 
-    private static class ProcessBuildInfo extends PrintFailuresEventSourceListener {
+    private static JsonNode parse(String data) {
+        try {
+            return MAPPER.readTree(data);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static class ProcessBuildInfo implements BuildEventProcessor<ProcessBuildInfo.Result> {
         public static class Result {
             public final String buildId;
             public final boolean matches;
@@ -259,7 +273,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         private final String buildId;
         private final List<String> projectNames;
-        private final CompletableFuture<Result> result = new CompletableFuture<>();
         private final List<String> rootProjects = new ArrayList<>();
         private final List<String> tags = new ArrayList<>();
         private int maxWorkers;
@@ -269,43 +282,30 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             this.projectNames = projectNames;
         }
 
-        public CompletableFuture<Result> getResult() {
-            return result;
-        }
-
         @Override
-        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
-        }
-
-        @Override
-        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
-            // System.out.println("Event: " + type + " - " + data);
-            if ("BuildEvent".equals(type)) {
-                JsonNode eventJson = parse(data);
-                long timestamp = eventJson.get("timestamp").asLong();
-                String eventType = eventJson.get("type").get("eventType").asText();
-                int delta;
-                switch (eventType) {
-                    case "ProjectStructure":
-                        String rootProject = eventJson.get("data").get("rootProjectName").asText();
-                        rootProjects.add(rootProject);
-                        break;
-                    case "UserTag":
-                        String tag = eventJson.get("data").get("tag").asText();
-                        tags.add(tag);
-                        break;
-                    case "BuildModes":
-                        maxWorkers = eventJson.get("data").get("maxWorkers").asInt();
-                        break;
-                    default:
-                        throw new AssertionError("Unknown event type: " + eventType);
-                }
-
+        public void process(@Nullable String id, @Nonnull JsonNode eventJson) {
+            long timestamp = eventJson.get("timestamp").asLong();
+            String eventType = eventJson.get("type").get("eventType").asText();
+            int delta;
+            switch (eventType) {
+                case "ProjectStructure":
+                    String rootProject = eventJson.get("data").get("rootProjectName").asText();
+                    rootProjects.add(rootProject);
+                    break;
+                case "UserTag":
+                    String tag = eventJson.get("data").get("tag").asText();
+                    tags.add(tag);
+                    break;
+                case "BuildModes":
+                    maxWorkers = eventJson.get("data").get("maxWorkers").asInt();
+                    break;
+                default:
+                    throw new AssertionError("Unknown event type: " + eventType);
             }
         }
 
         @Override
-        public void onClosed(@Nonnull EventSource eventSource) {
+        public Result complete() {
             boolean matches;
             BuildStatistics stats;
             if (!projectNames.stream().anyMatch(rootProjects::contains)) {
@@ -316,15 +316,14 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 System.out.println("Found build " + buildId);
                 matches = true;
             }
-            result.complete(new Result(buildId, matches, maxWorkers));
+            return new Result(buildId, matches, maxWorkers);
         }
     }
 
-    private static class ProcessTaskEvents extends PrintFailuresEventSourceListener {
+    private static class ProcessTaskEvents implements BuildEventProcessor<BuildStatistics> {
         private final String buildId;
         private final int maxWorkers;
         private final List<String> excludedTaskTypes;
-        private final CompletableFuture<BuildStatistics> result = new CompletableFuture<>();
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
         private static class TaskInfo {
@@ -339,12 +338,6 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 this.path = path;
                 this.startTime = startTime;
             }
-
-            // We did encounter a task that did not have an outcome somehow in GE scans
-            // let's not have that fail the process
-            public boolean isComplete() {
-                return finishTime >= startTime && outcome != null;
-            }
         }
 
         private ProcessTaskEvents(String buildId, int maxWorkers, List<String> excludedTaskTypes) {
@@ -353,51 +346,38 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             this.excludedTaskTypes = excludedTaskTypes;
         }
 
-        public CompletableFuture<BuildStatistics> getResult() {
-            return result;
-        }
-
         @Override
-        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
-        }
-
-        @Override
-        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
-            // System.out.println("Event: " + type + " !! " + id + " - " + data);
-            if ("BuildEvent".equals(type)) {
-                JsonNode eventJson = parse(data);
-                long timestamp = eventJson.get("timestamp").asLong();
-                String eventType = eventJson.get("type").get("eventType").asText();
-                long eventId = eventJson.get("data").get("id").asLong();
-                int delta;
-                switch (eventType) {
-                    case "TaskStarted":
-                        tasks.put(eventId, new TaskInfo(
-                                eventJson.get("data").get("className").asText(),
-                                eventJson.get("data").get("path").asText(),
-                                timestamp
-                        ));
-                        break;
-                    case "TaskFinished":
-                        TaskInfo task = tasks.get(eventId);
-                        task.finishTime = timestamp;
-                        task.outcome = eventJson.get("data").get("outcome").asText();
-                        break;
-                    default:
-                        throw new AssertionError("Unknown event type: " + eventType);
-                }
+        public void process(@Nullable String id, @Nonnull JsonNode eventJson) {
+            long timestamp = eventJson.get("timestamp").asLong();
+            String eventType = eventJson.get("type").get("eventType").asText();
+            long eventId = eventJson.get("data").get("id").asLong();
+            int delta;
+            switch (eventType) {
+                case "TaskStarted":
+                    tasks.put(eventId, new TaskInfo(
+                            eventJson.get("data").get("className").asText(),
+                            eventJson.get("data").get("path").asText(),
+                            timestamp
+                    ));
+                    break;
+                case "TaskFinished":
+                    TaskInfo task = tasks.get(eventId);
+                    task.finishTime = timestamp;
+                    task.outcome = eventJson.get("data").get("outcome").asText();
+                    break;
+                default:
+                    throw new AssertionError("Unknown event type: " + eventType);
             }
         }
 
         @Override
-        public void onClosed(@Nonnull EventSource eventSource) {
+        public BuildStatistics complete() {
             System.out.println("Finished processing build " + buildId);
             SortedMap<Long, Integer> startStopEvents = new TreeMap<>();
             AtomicInteger taskCount = new AtomicInteger(0);
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
-                    .filter(TaskInfo::isComplete)
                     .filter(task -> excludedTaskTypes.stream().noneMatch(prefix -> task.type.startsWith(prefix)))
                     .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
@@ -421,13 +401,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 concurrencyLevel += delta;
                 lastTimeStamp = timestamp;
             }
-            result.complete(new DefaultBuildStatistics(
+            return new DefaultBuildStatistics(
                     ImmutableList.of(buildId),
                     taskCount.get(),
                     copyOfSorted(taskTypeTimes),
                     copyOfSorted(taskPathTimes),
                     copyOfSorted(histogram),
-                    ImmutableSortedMap.of(maxWorkers, 1))
+                    ImmutableSortedMap.of(maxWorkers, 1)
             );
         }
     }
@@ -477,11 +457,67 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
     }
 
-    private static JsonNode parse(String data) {
-        try {
-            return MAPPER.readTree(data);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
+    private interface BuildEventProcessor<T> {
+        default void initialize(@Nonnull Response response) {
+        }
+
+        void process(@Nullable String id, @Nonnull JsonNode data);
+
+        T complete();
+    }
+
+    private static class BuildEventProcessingException extends Exception {
+        public BuildEventProcessingException(String buildId, String stage, Throwable cause) {
+            super(String.format("Failed to %s build %s", stage, buildId), cause);
+        }
+    }
+
+    private static class BuildEventProcessingListener<T> extends PrintFailuresEventSourceListener {
+        private final String buildId;
+        private final BuildEventProcessor<T> processor;
+        private final CompletableFuture<T> result = new CompletableFuture<>();
+
+        public BuildEventProcessingListener(String buildId, BuildEventProcessor<T> processor) {
+            this.buildId = buildId;
+            this.processor = processor;
+        }
+
+        public CompletableFuture<T> getResult() {
+            return result;
+        }
+
+        @Override
+        public void onOpen(@Nonnull EventSource eventSource, @Nonnull Response response) {
+            try {
+                processor.initialize(response);
+            } catch (Exception e) {
+                result.completeExceptionally(new BuildEventProcessingException(buildId, "initialize processing", e));
+            }
+        }
+
+        @Override
+        public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
+            if (!result.isDone()) {
+                if ("BuildEvent".equals(type)) {
+                    try {
+                        JsonNode jsonData = MAPPER.readTree(data);
+                        processor.process(id, jsonData);
+                    } catch (Exception e) {
+                        result.completeExceptionally(new BuildEventProcessingException(buildId, "process event (" + data + ") for", e));
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void onClosed(@Nonnull EventSource eventSource) {
+            if (!result.isDone()) {
+                try {
+                    result.complete(processor.complete());
+                } catch (Exception e) {
+                    result.completeExceptionally(new BuildEventProcessingException(buildId, "complete processing", e));
+                }
+            }
         }
     }
 
