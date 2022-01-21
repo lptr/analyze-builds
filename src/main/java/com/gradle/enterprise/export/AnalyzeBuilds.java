@@ -60,7 +60,7 @@ import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 import static java.time.Instant.now;
 
 @Command(
-        name = "analyze",
+        name = "analyze-builds",
         description = "Analyze GE data",
         mixinStandardHelpOptions = true,
         customSynopsis = "analyze --server <URL> [OPTIONS...]"
