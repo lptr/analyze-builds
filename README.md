@@ -4,6 +4,13 @@
 
 Queries build scan data from a [Gradle Enterprise](https://gradle.com) server via the [Export API](https://docs.gradle.com/enterprise/export-api/), filters them and summarizes task execution and parallelism data.
 
+Currently the following data is collected:
+
+- distribution of build time spent running 1, 2, 3 etc. tasks concurrently,
+- distribution of build time broken down by task type,
+- distribution of build time broken down by task path,
+- distribution of the `org.gradle.workers.max` setting for the builds encountered.
+
 ## Minimum Gradle Enterprise version
 
 This tool uses version 2 of the Export API, available since Gradle Enterprise 2021.2.
