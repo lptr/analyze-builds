@@ -12,7 +12,7 @@ interface Filter {
 
     boolean matches(Collection<String> elements);
 
-    static Filter with(String title, Pattern includes, Pattern excludes) {
+    static Filter withRegex(String title, Pattern includes, Pattern excludes) {
         return new AbstractFilter<Pattern>(title, includes, excludes) {
             @Override
             protected boolean match(Pattern pattern, String element) {
@@ -26,7 +26,24 @@ interface Filter {
         };
     }
 
-    static Filter with(String title, Collection<String> includes, Collection<String> excludes) {
+    static Filter withRegex(String title, Collection<Pattern> includes, Collection<Pattern> excludes) {
+        return new AbstractFilter<Collection<Pattern>>(title, includes, excludes) {
+            @Override
+            protected boolean match(Collection<Pattern> patterns, String element) {
+                return patterns.stream()
+                        .anyMatch(pattern -> pattern.matcher(element).matches());
+            }
+
+            @Override
+            protected String format(Collection<Pattern> patterns) {
+                return "matching regex " + patterns.stream()
+                        .map(element -> "/" + element + "/")
+                        .collect(Collectors.joining(", "));
+            }
+        };
+    }
+
+    static Filter withOptions(String title, Collection<String> includes, Collection<String> excludes) {
         return new AbstractFilter<Collection<String>>(title, includes, excludes) {
             @Override
             protected boolean match(Collection<String> pattern, String element) {

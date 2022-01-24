@@ -115,6 +115,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--exclude-task-type", paramLabel = "<FQCN>", description = "Exclude tasks with FQCNs starting with the given pattern")
     private List<String> excludeTaskTypes;
 
+    @Option(names = "--include-task-path", paramLabel = "<FQCN>", description = "Include only tasks with paths matching the given regex", converter = PatternConverter.class)
+    private List<Pattern> includeTaskPaths;
+
+    @Option(names = "--exclude-task-path", paramLabel = "<FQCN>", description = "Exclude tasks with paths matching the given regex", converter = PatternConverter.class)
+    private List<Pattern> excludeTaskPaths;
+
     @Option(names = "--verbose", description = "Enable verbose output")
     private boolean verbose;
 
@@ -158,10 +164,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
                 : queryBuildsFromPast(since, eventSourceFactory);
-        Filter projectFilter = Filter.with("projects", includeProjects, excludeProjects);
-        Filter tagFilter = Filter.with("tags", includeTags, excludeTags);
-        Filter requestedTaskFilter = Filter.with("requested tasks", includeRequestedTasks, excludeRequestedTasks);
-        Filter taskTypeFilter = Filter.with("task type prefixes", includeTaskTypes, excludeTaskTypes);
+        Filter projectFilter = Filter.withOptions("projects", includeProjects, excludeProjects);
+        Filter tagFilter = Filter.withOptions("tags", includeTags, excludeTags);
+        Filter requestedTaskFilter = Filter.withRegex("requested tasks", includeRequestedTasks, excludeRequestedTasks);
+        Filter taskTypeFilter = Filter.withOptions("task type prefixes", includeTaskTypes, excludeTaskTypes);
+        Filter taskPathFilter = Filter.withRegex("task path", includeTaskPaths, excludeTaskPaths);
 
         LOGGER.info("Filtering builds by:");
         LOGGER.info(" - {}", projectFilter);
@@ -170,13 +177,14 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         LOGGER.info("Filtering tasks by:");
         LOGGER.info(" - {}", taskTypeFilter);
+        LOGGER.info(" - {}", taskPathFilter);
 
         BuildStatistics composedStats = buildIds
                 .parallel()
                 .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectFilter, tagFilter, requestedTaskFilter)))
                 .map(future -> future.thenCompose(result -> {
                     if (result.matches) {
-                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, taskTypeFilter));
+                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, taskTypeFilter, taskPathFilter));
                     } else {
                         return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
                     }
@@ -379,6 +387,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         private final String buildId;
         private final int maxWorkers;
         private final Filter taskTypeFilter;
+        private final Filter taskPathFilter;
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
         private static class TaskInfo {
@@ -395,10 +404,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             }
         }
 
-        private ProcessTaskEvents(String buildId, int maxWorkers, Filter taskTypeFilter) {
+        private ProcessTaskEvents(String buildId, int maxWorkers, Filter taskTypeFilter, Filter taskPathFilter) {
             this.buildId = buildId;
             this.maxWorkers = maxWorkers;
             this.taskTypeFilter = taskTypeFilter;
+            this.taskPathFilter = taskPathFilter;
         }
 
         @Override
@@ -433,6 +443,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
                     .filter(task -> taskTypeFilter.matches(task.type))
+                    .filter(task -> taskPathFilter.matches(task.path))
                     .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
                     .forEach(task -> {
                         taskCount.incrementAndGet();
