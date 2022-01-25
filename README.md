@@ -34,10 +34,16 @@ You can download the latest release from [releases](https://github.com/lptr/anal
 $ bin/analyze-builds \
     --server https://ge.gradle.org \
     --api-key ... \
-    --include-project gradle \
-    --include-tag LOCAL \
-    --exclude-task-type org.gradle.api.tasks.testing.Test
+    --project gradle \
+    --tag LOCAL \
+    --task-type !org.gradle.api.tasks.testing.Test
 ```
+
+Note that filters like `--project` and `--tag` accept the following patterns:
+
+- by default the parameter is treated as an exact match (e.g. `--tag LOCAL`),
+- when wrapped in `/.../` the parameter is interpreted as a regular expression (e.g. `--task-path '.*:run`),
+- when prefixed with `!` the filter is negated (e.g. `--task-type !org.gradle.api.tasks.testing.Test`).
 
 Use `--help` to check all the options available.
 
@@ -52,12 +58,16 @@ $ ./gradlew :run --args="..."
 ```text
 Connecting to GE server at https://ge.gradle.org/
 Querying builds since Jan 21, 2022, 1:48:20 PM
-Filtering builds by:
- - include projects 'gradle'
- - include tags 'LOCAL'
- - not filtering by requested tasks
-Filtering tasks by:
- - exclude task type prefixes 'org.gradle.api.tasks.testing.Test'
+Filtering builds:
+ - by project: include 'gradle'
+ - by tag: include 'LOCAL'
+ - by requested task: not filtering
+Filtering tasks:
+ - by task type: exclude 'org.gradle.api.tasks.testing.Test', exclude /gradlebuild\.integrationtests\.tasks\..*/
+ - by task path: not filtering
+Logging tasks
+ - by task type: not filtering
+ - by task path: not filtering
 Finished querying builds, found 111
 Statistics for 8 builds with 162 tasks
 

@@ -63,7 +63,9 @@ import static java.time.Instant.now;
         description = "Analyze GE data",
         mixinStandardHelpOptions = true,
         customSynopsis = "analyze --server <URL> [OPTIONS...]",
-        footer = "\nPatterns match explicitly by default. When surrounded by /.../ they are interpreted as regular expressions.",
+        footer = "\nBy default, <pattern> matches explicitly. " +
+                "When surrounded by /.../ the <pattern> is interpreted as a regular expression. " +
+                "When prefixed wtih !, a <pattern> is treated as excluding.",
         versionProvider = ManifestVersionProvider.class,
         usageHelpWidth = 128,
         usageHelpAutoWidth = true
@@ -92,40 +94,25 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--query-since", paramLabel = "<duration>", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --builds or --load-builds-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
-    @Option(names = "--include-project", paramLabel = "<name>", description = "Include builds with the root project matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> includeProjects;
+    @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project", converter = Matcher.Converter.class)
+    private List<Matcher> filterProjects;
 
-    @Option(names = "--exclude-project", paramLabel = "<name>", description = "Exclude builds with the root project matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> excludeProjects;
+    @Option(names = "--tag", paramLabel = "<pattern>", description = "Include/exclude builds with a matching tag", converter = Matcher.Converter.class)
+    private List<Matcher> filterTags;
 
-    @Option(names = "--include-tag", paramLabel = "<name>", description = "Include builds with a tag matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> includeTags;
+    @Option(names = "--requested-task", paramLabel = "<pattern>", description = "Include/eclude builds with a matching requested task", converter = Matcher.Converter.class)
+    private List<Matcher> filterRequestedTasks;
 
-    @Option(names = "--exclude-tag", paramLabel = "<name>", description = "Include builds with a tag matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> excludeTags;
+    @Option(names = "--task-type", paramLabel = "<pattern>", description = "Include/exclude task with matching type", converter = Matcher.Converter.class)
+    private List<Matcher> filterTaskTypes;
 
-    @Option(names = "--include-requested-task", paramLabel = "<regex>", description = "Include only builds that requested tasks mathcing the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> includeRequestedTasks;
+    @Option(names = "--task-path", paramLabel = "<pattern>", description = "Include/exclude task with matchin path", converter = Matcher.Converter.class)
+    private List<Matcher> filterTaskPaths;
 
-    @Option(names = "--exclude-requested-task", paramLabel = "<regex>", description = "Exclude builds that requested tasks mathcing the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> excludeRequestedTasks;
-
-    @Option(names = "--include-task-type", paramLabel = "<FQCN>", description = "Include only tasks with FQCNs matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> includeTaskTypes;
-
-    @Option(names = "--exclude-task-type", paramLabel = "<FQCN>", description = "Exclude tasks with FQCNs matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> excludeTaskTypes;
-
-    @Option(names = "--include-task-path", paramLabel = "<path>", description = "Include only tasks with paths matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> includeTaskPaths;
-
-    @Option(names = "--exclude-task-path", paramLabel = "<path>", description = "Exclude tasks with paths matching the given pattern", converter = Matcher.Converter.class)
-    private List<Matcher> excludeTaskPaths;
-
-    @Option(names = "--log-task-type", paramLabel = "<FQCN>", description = "Log tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    @Option(names = "--log-task-type", paramLabel = "<pattern>", description = "Log task with matching type", converter = Matcher.Converter.class)
     private List<Matcher> logTaskTypes;
 
-    @Option(names = "--log-task-path", paramLabel = "<path>", description = "Log tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path", converter = Matcher.Converter.class)
     private List<Matcher> logTaskPaths;
 
     @Option(names = "--verbose", description = "Enable verbose output")
@@ -171,26 +158,26 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
                 : queryBuildsFromPast(since, eventSourceFactory);
-        Filter projectFilter = new Filter("project", includeProjects, excludeProjects);
-        Filter tagFilter = new Filter("tag", includeTags, excludeTags);
-        Filter requestedTaskFilter = new Filter("requested task", includeRequestedTasks, excludeRequestedTasks);
-        Filter taskTypeFilter = new Filter("task type", includeTaskTypes, excludeTaskTypes);
-        Filter taskPathFilter = new Filter("task path", includeTaskPaths, excludeTaskPaths);
-        Filter logTasksByTypeFilter = new Filter("task type", logTaskTypes, null);
-        Filter logTasksByPathFilter = new Filter("task path", logTaskPaths, null);
+        Filter projectFilter = new Filter(filterProjects);
+        Filter tagFilter = new Filter(filterTags);
+        Filter requestedTaskFilter = new Filter(filterRequestedTasks);
+        Filter taskTypeFilter = new Filter(filterTaskTypes);
+        Filter taskPathFilter = new Filter(filterTaskPaths);
+        Filter logTasksByTypeFilter = new Filter(logTaskTypes);
+        Filter logTasksByPathFilter = new Filter(logTaskPaths);
 
-        LOGGER.info("Filtering builds by:");
-        LOGGER.info(" - {}", projectFilter);
-        LOGGER.info(" - {}", tagFilter);
-        LOGGER.info(" - {}", requestedTaskFilter);
+        LOGGER.info("Filtering builds:");
+        LOGGER.info(" - by project: {}", projectFilter);
+        LOGGER.info(" - by tag: {}", tagFilter);
+        LOGGER.info(" - by requested task: {}", requestedTaskFilter);
 
-        LOGGER.info("Filtering tasks by:");
-        LOGGER.info(" - {}", taskTypeFilter);
-        LOGGER.info(" - {}", taskPathFilter);
+        LOGGER.info("Filtering tasks:");
+        LOGGER.info(" - by task type: {}", taskTypeFilter);
+        LOGGER.info(" - by task path: {}", taskPathFilter);
 
-        LOGGER.info("Logging tasks");
-        LOGGER.info(" - {}", logTasksByTypeFilter);
-        LOGGER.info(" - {}", logTasksByPathFilter);
+        LOGGER.info("Logging tasks:");
+        LOGGER.info(" - by task type: {}", logTasksByTypeFilter);
+        LOGGER.info(" - by task path: {}", logTasksByPathFilter);
 
         BuildStatistics composedStats = buildIds
                 .parallel()
