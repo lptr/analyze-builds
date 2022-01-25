@@ -14,7 +14,6 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.gradle.enterprise.export.util.DurationConverter;
 import com.gradle.enterprise.export.util.HttpUrlConverter;
 import com.gradle.enterprise.export.util.ManifestVersionProvider;
-import com.gradle.enterprise.export.util.PatternConverter;
 import com.gradle.enterprise.export.util.StreamableQueue;
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
@@ -54,7 +53,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BinaryOperator;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
@@ -65,7 +63,10 @@ import static java.time.Instant.now;
         description = "Analyze GE data",
         mixinStandardHelpOptions = true,
         customSynopsis = "analyze --server <URL> [OPTIONS...]",
-        versionProvider = ManifestVersionProvider.class
+        footer = "\nPatterns match explicitly by default. When surrounded by /.../ they are interpreted as regular expressions.",
+        versionProvider = ManifestVersionProvider.class,
+        usageHelpWidth = 128,
+        usageHelpAutoWidth = true
 )
 public final class AnalyzeBuilds implements Callable<Integer> {
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(AnalyzeBuilds.class);
@@ -91,35 +92,41 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--query-since", paramLabel = "<duration>", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --builds or --load-builds-from is specified", converter = DurationConverter.class)
     private Duration since = Duration.ofHours(2);
 
-    @Option(names = "--include-project", paramLabel = "<name>", description = "Comma-separated list of projects to include")
-    private List<String> includeProjects;
+    @Option(names = "--include-project", paramLabel = "<name>", description = "Include builds with the root project matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> includeProjects;
 
-    @Option(names = "--exclude-project", paramLabel = "<name>", description = "Comma-separated list of projects to exclude")
-    private List<String> excludeProjects;
+    @Option(names = "--exclude-project", paramLabel = "<name>", description = "Exclude builds with the root project matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> excludeProjects;
 
-    @Option(names = "--include-tag", paramLabel = "<name>", description = "Comma-separated list of tags to include")
-    private List<String> includeTags;
+    @Option(names = "--include-tag", paramLabel = "<name>", description = "Include builds with a tag matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> includeTags;
 
-    @Option(names = "--exclude-tag", paramLabel = "<name>", description = "Comma-separated list of tags to exclude")
-    private List<String> excludeTags;
+    @Option(names = "--exclude-tag", paramLabel = "<name>", description = "Include builds with a tag matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> excludeTags;
 
-    @Option(names = "--include-requested-tasks", paramLabel = "<regex>", description = "Include only builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
-    private Pattern includeRequestedTasks;
+    @Option(names = "--include-requested-task", paramLabel = "<regex>", description = "Include only builds that requested tasks mathcing the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> includeRequestedTasks;
 
-    @Option(names = "--exclude-requested-tasks", paramLabel = "<regex>", description = "Exclude builds that requested tasks mathcing the given regular expression", converter = PatternConverter.class)
-    private Pattern excludeRequestedTasks;
+    @Option(names = "--exclude-requested-task", paramLabel = "<regex>", description = "Exclude builds that requested tasks mathcing the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> excludeRequestedTasks;
 
-    @Option(names = "--include-task-type", paramLabel = "<FQCN>", description = "Include only tasks with FQCNs starting with the given pattern")
-    private List<String> includeTaskTypes;
+    @Option(names = "--include-task-type", paramLabel = "<FQCN>", description = "Include only tasks with FQCNs matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> includeTaskTypes;
 
-    @Option(names = "--exclude-task-type", paramLabel = "<FQCN>", description = "Exclude tasks with FQCNs starting with the given pattern")
-    private List<String> excludeTaskTypes;
+    @Option(names = "--exclude-task-type", paramLabel = "<FQCN>", description = "Exclude tasks with FQCNs matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> excludeTaskTypes;
 
-    @Option(names = "--include-task-path", paramLabel = "<FQCN>", description = "Include only tasks with paths matching the given regex", converter = PatternConverter.class)
-    private List<Pattern> includeTaskPaths;
+    @Option(names = "--include-task-path", paramLabel = "<path>", description = "Include only tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> includeTaskPaths;
 
-    @Option(names = "--exclude-task-path", paramLabel = "<FQCN>", description = "Exclude tasks with paths matching the given regex", converter = PatternConverter.class)
-    private List<Pattern> excludeTaskPaths;
+    @Option(names = "--exclude-task-path", paramLabel = "<path>", description = "Exclude tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> excludeTaskPaths;
+
+    @Option(names = "--log-task-type", paramLabel = "<FQCN>", description = "Log tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> logTaskTypes;
+
+    @Option(names = "--log-task-path", paramLabel = "<path>", description = "Log tasks with paths matching the given pattern", converter = Matcher.Converter.class)
+    private List<Matcher> logTaskPaths;
 
     @Option(names = "--verbose", description = "Enable verbose output")
     private boolean verbose;
@@ -164,11 +171,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
                 : queryBuildsFromPast(since, eventSourceFactory);
-        Filter projectFilter = Filter.withOptions("projects", includeProjects, excludeProjects);
-        Filter tagFilter = Filter.withOptions("tags", includeTags, excludeTags);
-        Filter requestedTaskFilter = Filter.withRegex("requested tasks", includeRequestedTasks, excludeRequestedTasks);
-        Filter taskTypeFilter = Filter.withOptions("task type prefixes", includeTaskTypes, excludeTaskTypes);
-        Filter taskPathFilter = Filter.withRegex("task path", includeTaskPaths, excludeTaskPaths);
+        Filter projectFilter = new Filter("project", includeProjects, excludeProjects);
+        Filter tagFilter = new Filter("tag", includeTags, excludeTags);
+        Filter requestedTaskFilter = new Filter("requested task", includeRequestedTasks, excludeRequestedTasks);
+        Filter taskTypeFilter = new Filter("task type", includeTaskTypes, excludeTaskTypes);
+        Filter taskPathFilter = new Filter("task path", includeTaskPaths, excludeTaskPaths);
+        Filter logTasksByTypeFilter = new Filter("task type", logTaskTypes, null);
+        Filter logTasksByPathFilter = new Filter("task path", logTaskPaths, null);
 
         LOGGER.info("Filtering builds by:");
         LOGGER.info(" - {}", projectFilter);
@@ -179,12 +188,28 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         LOGGER.info(" - {}", taskTypeFilter);
         LOGGER.info(" - {}", taskPathFilter);
 
+        LOGGER.info("Logging tasks");
+        LOGGER.info(" - {}", logTasksByTypeFilter);
+        LOGGER.info(" - {}", logTasksByPathFilter);
+
         BuildStatistics composedStats = buildIds
                 .parallel()
                 .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectFilter, tagFilter, requestedTaskFilter)))
                 .map(future -> future.thenCompose(result -> {
                     if (result.matches) {
-                        return processEventSource(eventSourceFactory, result.buildId, requestTaskEvents(result.buildId), new ProcessTaskEvents(result.buildId, result.maxWorkers, taskTypeFilter, taskPathFilter));
+                        return processEventSource(
+                                eventSourceFactory,
+                                result.buildId,
+                                requestTaskEvents(result.buildId),
+                                new ProcessTaskEvents(
+                                        result.buildId,
+                                        result.maxWorkers,
+                                        taskTypeFilter,
+                                        taskPathFilter,
+                                        logTasksByTypeFilter,
+                                        logTasksByPathFilter
+                                )
+                        );
                     } else {
                         return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
                     }
@@ -388,6 +413,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         private final int maxWorkers;
         private final Filter taskTypeFilter;
         private final Filter taskPathFilter;
+        private final Filter logTaskTypes;
+        private final Filter logTaskPaths;
         private final Map<Long, TaskInfo> tasks = new HashMap<>();
 
         private static class TaskInfo {
@@ -404,11 +431,20 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             }
         }
 
-        private ProcessTaskEvents(String buildId, int maxWorkers, Filter taskTypeFilter, Filter taskPathFilter) {
+        private ProcessTaskEvents(
+                String buildId,
+                int maxWorkers,
+                Filter taskTypeFilter,
+                Filter taskPathFilter,
+                Filter logTaskTypes,
+                Filter logTaskPaths
+        ) {
             this.buildId = buildId;
             this.maxWorkers = maxWorkers;
             this.taskTypeFilter = taskTypeFilter;
             this.taskPathFilter = taskPathFilter;
+            this.logTaskTypes = logTaskTypes;
+            this.logTaskPaths = logTaskPaths;
         }
 
         @Override
@@ -418,11 +454,18 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             long eventId = eventJson.get("data").get("id").asLong();
             switch (eventType) {
                 case "TaskStarted":
+                    String type = eventJson.get("data").get("className").asText();
+                    String path = eventJson.get("data").get("path").asText();
                     tasks.put(eventId, new TaskInfo(
-                            eventJson.get("data").get("className").asText(),
-                            eventJson.get("data").get("path").asText(),
+                            type,
+                            path,
                             timestamp
                     ));
+                    if (logTaskTypes.filters() || logTaskPaths.filters()) {
+                        if (logTaskTypes.matches(type) && logTaskPaths.matches(path)) {
+                            LOGGER.info("Task {} with type {} found in build {}", path, type, buildId);
+                        }
+                    }
                     break;
                 case "TaskFinished":
                     TaskInfo task = tasks.get(eventId);

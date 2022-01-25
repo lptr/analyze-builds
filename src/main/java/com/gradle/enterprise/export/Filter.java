@@ -2,112 +2,69 @@ package com.gradle.enterprise.export;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-interface Filter {
-    default boolean matches(String element) {
+class Filter {
+    private final String title;
+    private final Collection<Matcher> includes;
+    private final Collection<Matcher> excludes;
+
+    public Filter(String title, Collection<Matcher> includes, Collection<Matcher> excludes) {
+        this.title = title;
+        this.includes = includes;
+        this.excludes = excludes;
+    }
+
+    public boolean matches(String element) {
         return matches(Collections.singleton(element));
     }
 
-    boolean matches(Collection<String> elements);
-
-    static Filter withRegex(String title, Pattern includes, Pattern excludes) {
-        return new AbstractFilter<Pattern>(title, includes, excludes) {
-            @Override
-            protected boolean match(Pattern pattern, String element) {
-                return pattern.matcher(element).matches();
-            }
-
-            @Override
-            protected String format(Pattern pattern) {
-                return "matching regex /" + pattern.pattern() + "/";
-            }
-        };
-    }
-
-    static Filter withRegex(String title, Collection<Pattern> includes, Collection<Pattern> excludes) {
-        return new AbstractFilter<Collection<Pattern>>(title, includes, excludes) {
-            @Override
-            protected boolean match(Collection<Pattern> patterns, String element) {
-                return patterns.stream()
-                        .anyMatch(pattern -> pattern.matcher(element).matches());
-            }
-
-            @Override
-            protected String format(Collection<Pattern> patterns) {
-                return "matching regex " + patterns.stream()
-                        .map(element -> "/" + element + "/")
-                        .collect(Collectors.joining(", "));
-            }
-        };
-    }
-
-    static Filter withOptions(String title, Collection<String> includes, Collection<String> excludes) {
-        return new AbstractFilter<Collection<String>>(title, includes, excludes) {
-            @Override
-            protected boolean match(Collection<String> pattern, String element) {
-                return pattern.contains(element);
-            }
-
-            @Override
-            protected String format(Collection<String> pattern) {
-                return pattern.stream()
-                        .map(element -> "'" + element + "'")
-                        .collect(Collectors.joining(", "));
-            }
-        };
-    }
-
-    abstract class AbstractFilter<T> implements Filter {
-        private final String title;
-        private final T includes;
-        private final T excludes;
-
-        private AbstractFilter(String title, T includes, T excludes) {
-            this.title = title;
-            this.includes = includes;
-            this.excludes = excludes;
+    public boolean matches(Collection<String> elements) {
+        if (includes != null && !elements.stream().anyMatch(element -> match(includes, element))) {
+            return false;
         }
-
-        @Override
-        public boolean matches(Collection<String> elements) {
-            if (includes != null && !elements.stream().anyMatch(element -> match(includes, element))) {
-                return false;
-            }
-            if (excludes != null && elements.stream().anyMatch(element -> match(excludes, element))) {
-                return false;
-            }
-            return true;
+        if (excludes != null && elements.stream().anyMatch(element -> match(excludes, element))) {
+            return false;
         }
+        return true;
+    }
 
-        protected abstract boolean match(T pattern, String element);
+    public boolean filters() {
+        return includes != null || excludes != null;
+    }
 
-        protected abstract String format(T pattern);
+    private static boolean match(Collection<Matcher> patterns, String value) {
+        return patterns.stream().anyMatch(pattern -> pattern.matches(value));
+    }
 
-        @Override
-        public String toString() {
-            if (includes == null && excludes == null) {
-                return "not filtering by " + title;
-            } else {
-                StringBuilder sb = new StringBuilder();
+    @Override
+    public String toString() {
+        if (includes == null && excludes == null) {
+            return "not filtering by " + title;
+        } else {
+            StringBuilder sb = new StringBuilder();
+            if (includes != null) {
+                sb.append("include ");
+                sb.append(title);
+                sb.append(" ");
+                sb.append(format(includes));
+            }
+            if (excludes != null) {
                 if (includes != null) {
-                    sb.append("include ");
-                    sb.append(title);
-                    sb.append(" ");
-                    sb.append(format(includes));
+                    sb.append("; ");
                 }
-                if (excludes != null) {
-                    if (includes != null) {
-                        sb.append("; ");
-                    }
-                    sb.append("exclude ");
-                    sb.append(title);
-                    sb.append(" ");
-                    sb.append(format(excludes));
-                }
-                return sb.toString();
+                sb.append("exclude ");
+                sb.append(title);
+                sb.append(" ");
+                sb.append(format(excludes));
             }
+            return sb.toString();
         }
+    }
+
+    private static String format(Collection<Matcher> patterns) {
+        return patterns.stream()
+                .map(Matcher::toString)
+                .collect(Collectors.joining(", "));
     }
 }
