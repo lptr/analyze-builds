@@ -202,7 +202,17 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         BuildStatistics composedStats = buildIds
             .parallel()
-            .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectFilter, tagFilter, requestedTaskFilter)))
+            .map(buildId -> processEventSource(
+                    eventSourceFactory,
+                    buildId,
+                    requestBuildInfo(buildId),
+                    new ProcessBuildInfo(
+                        buildId,
+                        projectFilter,
+                        tagFilter,
+                        requestedTaskFilter)
+                )
+            )
             .map(future -> future.thenCompose(result -> {
                 if (result.matches) {
                     return processEventSource(
