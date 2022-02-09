@@ -11,8 +11,8 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
-import com.gradle.enterprise.export.util.DurationConverter;
 import com.gradle.enterprise.export.util.HttpUrlConverter;
+import com.gradle.enterprise.export.util.InstantConverter;
 import com.gradle.enterprise.export.util.ManifestVersionProvider;
 import com.gradle.enterprise.export.util.StreamableQueue;
 import okhttp3.ConnectionPool;
@@ -60,7 +60,6 @@ import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
-import static java.time.Instant.now;
 
 @Command(
         name = "analyze-builds",
@@ -69,7 +68,9 @@ import static java.time.Instant.now;
         customSynopsis = "analyze --server <URL> [OPTIONS...]",
         footer = "\nBy default, <pattern> matches explicitly. " +
                 "When surrounded by /.../ the <pattern> is interpreted as a regular expression. " +
-                "When prefixed wtih !, a <pattern> is treated as excluding.",
+                "When prefixed wtih !, a <pattern> is treated as excluding." +
+                "\nAbsolute <time> can be specified according to LocalDate.parse() ('YYYY-MM-DD') or LocalDateTime.parse() ('YYYY-MM-DDTHH:MM:SS')." +
+                "\nRelative <time> can be specified using the Duration.parse() (e.g. 'P7D' for 7 days ago).",
         versionProvider = ManifestVersionProvider.class,
         usageHelpWidth = 128,
         usageHelpAutoWidth = true
@@ -98,8 +99,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--save-builds-to", paramLabel = "<file>", description = "File to save build IDs to")
     private File buildOutputFile;
 
-    @Option(names = "--query-since", paramLabel = "<duration>", description = "Query builds in the given timeframe; defaults to two hours, see Duration.parse() for more info; ignored when --builds or --load-builds-from is specified", converter = DurationConverter.class)
-    private Duration since = Duration.ofHours(2);
+    @Option(names = "--query-since", paramLabel = "<time>", description = "Query builds since the given point in time; defaults to two hours ago; ignored when --builds or --load-builds-from is specified", converter = InstantConverter.class)
+    private Instant since = Instant.now().minus(Duration.ofHours(2));
+
+    @Option(names = "--query-until", paramLabel = "<time>", description = "Query builds until the given point in time; ignored when --builds or --load-builds-from is specified", converter = InstantConverter.class)
+    private Instant until;
 
     @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project", converter = Matcher.Converter.class)
     private List<Matcher> filterProjects;
@@ -171,7 +175,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
-                : queryBuildsFromPast(since, eventSourceFactory);
+                : queryBuildsFromPast(since, until, eventSourceFactory);
         Filter projectFilter = new Filter(filterProjects);
         Filter tagFilter = new Filter(filterTags);
         Filter requestedTaskFilter = new Filter(filterRequestedTasks);
@@ -259,13 +263,17 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     @Nonnull
-    private Stream<String> queryBuildsFromPast(Duration duration, EventSource.Factory eventSourceFactory) {
-        Instant since = now().minus(duration);
+    private Stream<String> queryBuildsFromPast(Instant since, @Nullable Instant until, EventSource.Factory eventSourceFactory) {
         LOGGER.info("Querying builds since {}", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
                 .withZone(ZoneId.systemDefault())
                 .format(since));
+        if (until != null) {
+            LOGGER.info("Querying builds until {}", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
+                    .withZone(ZoneId.systemDefault())
+                    .format(until));
+        }
         StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
-        FilterBuildsByBuildTool buildToolFilter = new FilterBuildsByBuildTool(buildQueue);
+        QueueBuilds buildToolFilter = new QueueBuilds(buildQueue, until);
         eventSourceFactory.newEventSource(requestBuilds(since), buildToolFilter);
         return buildQueue.stream();
     }
@@ -294,12 +302,15 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 .build();
     }
 
-    private static class FilterBuildsByBuildTool extends PrintFailuresEventSourceListener {
+    private static class QueueBuilds extends PrintFailuresEventSourceListener {
         private final StreamableQueue<String> buildQueue;
+        @Nullable
+        private final Instant endTime;
         private final AtomicInteger buildCount = new AtomicInteger(0);
 
-        private FilterBuildsByBuildTool(StreamableQueue<String> buildQueue) {
+        private QueueBuilds(StreamableQueue<String> buildQueue, @Nullable Instant endTime) {
             this.buildQueue = buildQueue;
+            this.endTime = endTime;
         }
 
         @Override
@@ -310,6 +321,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         @Override
         public void onEvent(@Nonnull EventSource eventSource, @Nullable String id, @Nullable String type, @Nonnull String data) {
             JsonNode json = parse(data);
+            if (endTime != null) {
+                Instant timestamp = Instant.ofEpochMilli(json.get("timestamp").asLong());
+                if (timestamp.isAfter(endTime)) {
+                    return;
+                }
+            }
             JsonNode buildToolJson = json.get("toolType");
             if (buildToolJson != null && buildToolJson.asText().equals("gradle")) {
                 String buildId = json.get("buildId").asText();
