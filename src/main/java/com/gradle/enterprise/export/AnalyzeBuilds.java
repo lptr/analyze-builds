@@ -62,18 +62,18 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 
 @Command(
-        name = "analyze-builds",
-        description = "Analyze GE data",
-        mixinStandardHelpOptions = true,
-        customSynopsis = "analyze --server <URL> [OPTIONS...]",
-        footer = "\nBy default, <pattern> matches explicitly. " +
-                "When surrounded by /.../ the <pattern> is interpreted as a regular expression. " +
-                "When prefixed wtih !, a <pattern> is treated as excluding." +
-                "\nAbsolute <time> can be specified according to LocalDate.parse() ('YYYY-MM-DD') or LocalDateTime.parse() ('YYYY-MM-DDTHH:MM:SS')." +
-                "\nRelative <time> can be specified using the Duration.parse() (e.g. 'P7D' for 7 days ago).",
-        versionProvider = ManifestVersionProvider.class,
-        usageHelpWidth = 128,
-        usageHelpAutoWidth = true
+    name = "analyze-builds",
+    description = "Analyze GE data",
+    mixinStandardHelpOptions = true,
+    customSynopsis = "analyze --server <URL> [OPTIONS...]",
+    footer = "\nBy default, <pattern> matches explicitly. " +
+        "When surrounded by /.../ the <pattern> is interpreted as a regular expression. " +
+        "When prefixed wtih !, a <pattern> is treated as excluding." +
+        "\nAbsolute <time> can be specified according to LocalDate.parse() ('YYYY-MM-DD') or LocalDateTime.parse() ('YYYY-MM-DDTHH:MM:SS')." +
+        "\nRelative <time> can be specified using the Duration.parse() (e.g. 'P7D' for 7 days ago).",
+    versionProvider = ManifestVersionProvider.class,
+    usageHelpWidth = 128,
+    usageHelpAutoWidth = true
 )
 public final class AnalyzeBuilds implements Callable<Integer> {
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(AnalyzeBuilds.class);
@@ -143,12 +143,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             throw new RuntimeException("Export API access key must be specified");
         }
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-                .connectTimeout(Duration.ZERO)
-                .readTimeout(Duration.ZERO)
-                .retryOnConnectionFailure(true)
-                .connectionPool(new ConnectionPool(maxBuildScansStreamedConcurrently, 30, TimeUnit.SECONDS))
-                .authenticator(Authenticators.bearerToken(exportApiAccessKey))
-                .protocols(ImmutableList.of(Protocol.HTTP_1_1));
+            .connectTimeout(Duration.ZERO)
+            .readTimeout(Duration.ZERO)
+            .retryOnConnectionFailure(true)
+            .connectionPool(new ConnectionPool(maxBuildScansStreamedConcurrently, 30, TimeUnit.SECONDS))
+            .authenticator(Authenticators.bearerToken(exportApiAccessKey))
+            .protocols(ImmutableList.of(Protocol.HTTP_1_1));
         if (allowUntrusted) {
             SSLContext sslContext = SSLContext.getInstance("SSL");
             X509TrustManager trustManager = new AllTrustingTrustManager();
@@ -172,13 +172,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     private void processEvents(OkHttpClient httpClient) throws Exception {
         LOGGER.info("Connecting to GE server at {} ({}connections: {})",
-                serverUrl,
-                allowUntrusted ? "untrusted, " : "",
-                maxBuildScansStreamedConcurrently);
+            serverUrl,
+            allowUntrusted ? "untrusted, " : "",
+            maxBuildScansStreamedConcurrently);
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> buildIds = builds != null ? builds.stream()
-                : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
-                : queryBuildsFromPast(since, until, eventSourceFactory);
+            : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
+            : queryBuildsFromPast(since, until, eventSourceFactory);
         Filter projectFilter = new Filter(filterProjects);
         Filter tagFilter = new Filter(filterTags);
         Filter requestedTaskFilter = new Filter(filterRequestedTasks);
@@ -201,41 +201,41 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         LOGGER.info(" - by task path: {}", logTasksByPathFilter);
 
         BuildStatistics composedStats = buildIds
-                .parallel()
-                .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectFilter, tagFilter, requestedTaskFilter)))
-                .map(future -> future.thenCompose(result -> {
-                    if (result.matches) {
-                        return processEventSource(
-                                eventSourceFactory,
-                                result.buildId,
-                                requestTaskEvents(result.buildId),
-                                new ProcessTaskEvents(
-                                        result.buildId,
-                                        result.maxWorkers,
-                                        taskTypeFilter,
-                                        taskPathFilter,
-                                        logTasksByTypeFilter,
-                                        logTasksByPathFilter
-                                )
-                        );
-                    } else {
-                        return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
-                    }
-                }))
-                .map(future -> future.exceptionally(error -> {
-                            LOGGER.error("Couldn't process build, skipping", error);
-                            return BuildStatistics.EMPTY;
-                        })
-                )
-                .map(future -> {
-                    try {
-                        return future.get();
-                    } catch (InterruptedException | ExecutionException e) {
-                        throw new RuntimeException(e);
-                    }
+            .parallel()
+            .map(buildId -> processEventSource(eventSourceFactory, buildId, requestBuildInfo(buildId), new ProcessBuildInfo(buildId, projectFilter, tagFilter, requestedTaskFilter)))
+            .map(future -> future.thenCompose(result -> {
+                if (result.matches) {
+                    return processEventSource(
+                        eventSourceFactory,
+                        result.buildId,
+                        requestTaskEvents(result.buildId),
+                        new ProcessTaskEvents(
+                            result.buildId,
+                            result.maxWorkers,
+                            taskTypeFilter,
+                            taskPathFilter,
+                            logTasksByTypeFilter,
+                            logTasksByPathFilter
+                        )
+                    );
+                } else {
+                    return CompletableFuture.completedFuture(BuildStatistics.EMPTY);
+                }
+            }))
+            .map(future -> future.exceptionally(error -> {
+                    LOGGER.error("Couldn't process build, skipping", error);
+                    return BuildStatistics.EMPTY;
                 })
-                .reduce(BuildStatistics::merge)
-                .orElse(BuildStatistics.EMPTY);
+            )
+            .map(future -> {
+                try {
+                    return future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .reduce(BuildStatistics::merge)
+            .orElse(BuildStatistics.EMPTY);
 
         composedStats.print();
 
@@ -244,7 +244,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             buildOutputFile.getParentFile().mkdirs();
             try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(buildOutputFile.toPath(), StandardCharsets.UTF_8))) {
                 composedStats.getBuildIds()
-                        .forEach(writer::println);
+                    .forEach(writer::println);
             }
         }
     }
@@ -268,12 +268,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Nonnull
     private Stream<String> queryBuildsFromPast(Instant since, @Nullable Instant until, EventSource.Factory eventSourceFactory) {
         LOGGER.info("Querying builds since {}", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
-                .withZone(ZoneId.systemDefault())
-                .format(since));
+            .withZone(ZoneId.systemDefault())
+            .format(since));
         if (until != null) {
             LOGGER.info("Querying builds until {}", DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
-                    .withZone(ZoneId.systemDefault())
-                    .format(until));
+                .withZone(ZoneId.systemDefault())
+                .format(until));
         }
         StreamableQueue<String> buildQueue = new StreamableQueue<>("FINISHED");
         QueueBuilds buildToolFilter = new QueueBuilds(buildQueue, until);
@@ -285,24 +285,24 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @SuppressWarnings("ConstantConditions")
     private Request requestBuilds(Instant since) {
         return new Request.Builder()
-                .url(serverUrl.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
-                .build();
+            .url(serverUrl.resolve("/build-export/v2/builds/since/" + since.toEpochMilli()))
+            .build();
     }
 
     @Nonnull
     @SuppressWarnings("ConstantConditions")
     private Request requestBuildInfo(String buildId) {
         return new Request.Builder()
-                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes,BuildRequestedTasks"))
-                .build();
+            .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=ProjectStructure,UserTag,BuildModes,BuildRequestedTasks"))
+            .build();
     }
 
     @Nonnull
     @SuppressWarnings("ConstantConditions")
     private Request requestTaskEvents(String buildId) {
         return new Request.Builder()
-                .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
-                .build();
+            .url(serverUrl.resolve("/build-export/v2/build/" + buildId + "/events?eventTypes=TaskStarted,TaskFinished"))
+            .build();
     }
 
     private static class QueueBuilds extends PrintFailuresEventSourceListener {
@@ -385,10 +385,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         private int maxWorkers;
 
         private ProcessBuildInfo(
-                String buildId,
-                Filter projectFilter,
-                Filter tagFilter,
-                Filter requestedTaskFilter
+            String buildId,
+            Filter projectFilter,
+            Filter tagFilter,
+            Filter requestedTaskFilter
         ) {
             this.buildId = buildId;
             this.projectFilter = projectFilter;
@@ -422,9 +422,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         @Override
         public Result complete() {
             boolean matches = true
-                    && projectFilter.matches(rootProjects)
-                    && tagFilter.matches(tags)
-                    && requestedTaskFilter.matches(requestedTasks);
+                && projectFilter.matches(rootProjects)
+                && tagFilter.matches(tags)
+                && requestedTaskFilter.matches(requestedTasks);
             return new Result(buildId, matches, maxWorkers);
         }
     }
@@ -453,12 +453,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         private ProcessTaskEvents(
-                String buildId,
-                int maxWorkers,
-                Filter taskTypeFilter,
-                Filter taskPathFilter,
-                Filter logTaskTypes,
-                Filter logTaskPaths
+            String buildId,
+            int maxWorkers,
+            Filter taskTypeFilter,
+            Filter taskPathFilter,
+            Filter logTaskTypes,
+            Filter logTaskPaths
         ) {
             this.buildId = buildId;
             this.maxWorkers = maxWorkers;
@@ -478,9 +478,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                     String type = eventJson.get("data").get("className").asText();
                     String path = eventJson.get("data").get("path").asText();
                     tasks.put(eventId, new TaskInfo(
-                            type,
-                            path,
-                            timestamp
+                        type,
+                        path,
+                        timestamp
                     ));
                     if (logTaskTypes.filters() || logTaskPaths.filters()) {
                         if (logTaskTypes.matches(type) && logTaskPaths.matches(path)) {
@@ -506,16 +506,16 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             SortedMap<String, Long> taskTypeTimes = new TreeMap<>();
             SortedMap<String, Long> taskPathTimes = new TreeMap<>();
             tasks.values().stream()
-                    .filter(task -> taskTypeFilter.matches(task.type))
-                    .filter(task -> taskPathFilter.matches(task.path))
-                    .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
-                    .forEach(task -> {
-                        taskCount.incrementAndGet();
-                        add(taskTypeTimes, task.type, task.finishTime - task.startTime);
-                        add(taskPathTimes, task.path, task.finishTime - task.startTime);
-                        add(startStopEvents, task.startTime, 1);
-                        add(startStopEvents, task.finishTime, -1);
-                    });
+                .filter(task -> taskTypeFilter.matches(task.type))
+                .filter(task -> taskPathFilter.matches(task.path))
+                .filter(task -> task.outcome.equals("success") || task.outcome.equals("failed"))
+                .forEach(task -> {
+                    taskCount.incrementAndGet();
+                    add(taskTypeTimes, task.type, task.finishTime - task.startTime);
+                    add(taskPathTimes, task.path, task.finishTime - task.startTime);
+                    add(startStopEvents, task.startTime, 1);
+                    add(startStopEvents, task.finishTime, -1);
+                });
 
             int concurrencyLevel = 0;
             long lastTimeStamp = 0;
@@ -531,12 +531,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 lastTimeStamp = timestamp;
             }
             return new DefaultBuildStatistics(
-                    ImmutableList.of(buildId),
-                    taskCount.get(),
-                    copyOfSorted(taskTypeTimes),
-                    copyOfSorted(taskPathTimes),
-                    copyOfSorted(histogram),
-                    ImmutableSortedMap.of(maxWorkers, 1)
+                ImmutableList.of(buildId),
+                taskCount.get(),
+                copyOfSorted(taskTypeTimes),
+                copyOfSorted(taskPathTimes),
+                copyOfSorted(histogram),
+                ImmutableSortedMap.of(maxWorkers, 1)
             );
         }
     }
@@ -583,12 +583,12 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
         public DefaultBuildStatistics(
-                ImmutableList<String> buildIds,
-                int taskCount,
-                ImmutableSortedMap<String, Long> taskTypeTimes,
-                ImmutableSortedMap<String, Long> taskPathTimes,
-                ImmutableSortedMap<Integer, Long> workerTimes,
-                ImmutableSortedMap<Integer, Integer> maxWorkers
+            ImmutableList<String> buildIds,
+            int taskCount,
+            ImmutableSortedMap<String, Long> taskTypeTimes,
+            ImmutableSortedMap<String, Long> taskPathTimes,
+            ImmutableSortedMap<Integer, Long> workerTimes,
+            ImmutableSortedMap<Integer, Integer> maxWorkers
         ) {
             this.buildIds = buildIds;
             this.taskCount = taskCount;

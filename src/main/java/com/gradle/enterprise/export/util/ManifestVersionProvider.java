@@ -6,7 +6,7 @@ public class ManifestVersionProvider implements CommandLine.IVersionProvider {
     @Override
     public String[] getVersion() {
         return new String[]{
-                ManifestVersionProvider.class.getPackage().getImplementationVersion()
+            ManifestVersionProvider.class.getPackage().getImplementationVersion()
         };
     }
 }

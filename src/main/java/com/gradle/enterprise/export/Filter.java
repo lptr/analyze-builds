@@ -12,8 +12,8 @@ class Filter {
 
     public Filter(@Nullable Collection<Matcher> matchers) {
         this.matchers = matchers == null
-                ? ImmutableList.of()
-                : ImmutableList.copyOf(matchers);
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(matchers);
     }
 
     public boolean matches(String element) {
@@ -22,8 +22,8 @@ class Filter {
 
     public boolean matches(Collection<String> elements) {
         return matchers.isEmpty() || elements.stream()
-                .anyMatch(element -> matchers.stream()
-                        .anyMatch(matcher -> matcher.matches(element)));
+            .anyMatch(element -> matchers.stream()
+                .anyMatch(matcher -> matcher.matches(element)));
     }
 
     public boolean filters() {
@@ -38,8 +38,8 @@ class Filter {
     public String toString() {
         if (filters()) {
             return matchers.stream()
-                    .map(Matcher::toString)
-                    .collect(Collectors.joining(", "));
+                .map(Matcher::toString)
+                .collect(Collectors.joining(", "));
         } else {
             return "not filtering";
         }

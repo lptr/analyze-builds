@@ -27,16 +27,16 @@ public class StreamableQueue<T> extends ForwardingBlockingQueue<T> {
     @Override
     public Stream<T> stream() {
         return Stream.generate(() -> {
-                    try {
-                        T value = take();
-                        if (value == poison) {
-                            put(poison);
-                        }
-                        return value;
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
+                try {
+                    T value = take();
+                    if (value == poison) {
+                        put(poison);
                     }
-                })
-                .takeWhile(value -> value != poison);
+                    return value;
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .takeWhile(value -> value != poison);
     }
 }

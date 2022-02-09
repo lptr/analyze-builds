@@ -11,8 +11,8 @@ interface Matcher {
         @Override
         public Matcher convert(String value) {
             return value.startsWith("!")
-                    ? new ExcludingMatcher(createMatcher(value.substring(1)))
-                    : createMatcher(value);
+                ? new ExcludingMatcher(createMatcher(value.substring(1)))
+                : createMatcher(value);
         }
 
         private Matcher createMatcher(String value) {

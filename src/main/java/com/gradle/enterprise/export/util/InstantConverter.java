@@ -26,21 +26,21 @@ public class InstantConverter implements CommandLine.ITypeConverter<Instant> {
 
         try {
             return LocalDate.parse(value)
-                    .atStartOfDay(ZoneId.systemDefault())
-                    .toInstant();
+                .atStartOfDay(ZoneId.systemDefault())
+                .toInstant();
         } catch (DateTimeParseException ex) {
             parserProblems.add("Cannot be parsed as LocalDate: " + ex.getMessage());
         }
 
         try {
             return LocalDateTime.parse(value)
-                    .atZone(ZoneId.systemDefault())
-                    .toInstant();
+                .atZone(ZoneId.systemDefault())
+                .toInstant();
         } catch (DateTimeParseException ex) {
             parserProblems.add("Cannot be parsed as LocalDateTime: " + ex.getMessage());
         }
 
         throw new IllegalArgumentException(parserProblems.stream()
-                .collect(Collectors.joining("\n")));
+            .collect(Collectors.joining("\n")));
     }
 }

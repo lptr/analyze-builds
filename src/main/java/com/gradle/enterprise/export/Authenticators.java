@@ -27,8 +27,8 @@ public class Authenticators {
             }
 
             return response.request().newBuilder()
-                    .header(HttpHeaders.AUTHORIZATION, Credentials.basic(username, password))
-                    .build();
+                .header(HttpHeaders.AUTHORIZATION, Credentials.basic(username, password))
+                .build();
         };
     }
 
@@ -41,8 +41,8 @@ public class Authenticators {
             String encoded = Base64.getEncoder().encodeToString(accessKey.getBytes(StandardCharsets.UTF_8));
 
             return response.request().newBuilder()
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + encoded)
-                    .build();
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + encoded)
+                .build();
         };
     }
 }
