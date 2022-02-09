@@ -2,88 +2,80 @@ package com.gradle.enterprise.export;
 
 import picocli.CommandLine;
 
-import java.util.Locale;
 import java.util.regex.Pattern;
 
-abstract class Matcher {
-    enum Type {
-        INCLUDE, EXCLUDE
-    }
+interface Matcher {
+    boolean matches(String value);
 
-    private final Type type;
-
-    private Matcher(Type type) {
-        this.type = type;
-    }
-
-    public boolean matches(String value) {
-        boolean match = match(value);
-        return type == Type.INCLUDE
-                ? match
-                : !match;
-    }
-
-    protected abstract boolean match(String value);
-
-    @Override
-    public String toString() {
-        return type.name().toLowerCase(Locale.ROOT) + " " + describeValue();
-    }
-
-    protected abstract String describeValue();
-
-    static class Converter implements CommandLine.ITypeConverter<Matcher> {
+    class Converter implements CommandLine.ITypeConverter<Matcher> {
         @Override
         public Matcher convert(String value) {
             return value.startsWith("!")
-                    ? convert(Type.EXCLUDE, value.substring(1))
-                    : convert(Type.INCLUDE, value);
+                    ? new ExcludingMatcher(createMatcher(value.substring(1)))
+                    : createMatcher(value);
         }
 
-        private Matcher convert(Type type, String value) {
+        private Matcher createMatcher(String value) {
             if (value.startsWith("/") && value.endsWith("/")) {
-                return new RegexMatcher(type, Pattern.compile(value.substring(1, value.length() - 1)));
+                return new RegexMatcher(Pattern.compile(value.substring(1, value.length() - 1)));
             } else {
-                return new ExactMatcher(type, value);
-            }
-        }
-
-        private static class ExactMatcher extends Matcher {
-            private final String value;
-
-            public ExactMatcher(Type type, String value) {
-                super(type);
-                this.value = value;
-            }
-
-            @Override
-            protected boolean match(String value) {
-                return this.value.equals(value);
-            }
-
-            @Override
-            protected String describeValue() {
-                return "'" + value + "'";
-            }
-        }
-
-        private static class RegexMatcher extends Matcher {
-            private final Pattern pattern;
-
-            public RegexMatcher(Type type, Pattern pattern) {
-                super(type);
-                this.pattern = pattern;
-            }
-
-            @Override
-            protected boolean match(String value) {
-                return pattern.matcher(value).matches();
-            }
-
-            @Override
-            protected String describeValue() {
-                return "/" + pattern.pattern() + "/";
+                return new ExactMatcher(value);
             }
         }
     }
+
+    class ExactMatcher implements Matcher {
+        private final String value;
+
+        public ExactMatcher(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public boolean matches(String value) {
+            return this.value.equals(value);
+        }
+
+        @Override
+        public String toString() {
+            return "'" + value + "'";
+        }
+    }
+
+    class RegexMatcher implements Matcher {
+        private final Pattern pattern;
+
+        public RegexMatcher(Pattern pattern) {
+            this.pattern = pattern;
+        }
+
+        @Override
+        public boolean matches(String value) {
+            return pattern.matcher(value).matches();
+        }
+
+        @Override
+        public String toString() {
+            return "/" + pattern.pattern() + "/";
+        }
+    }
+
+    class ExcludingMatcher implements Matcher {
+        private final Matcher delegate;
+
+        public ExcludingMatcher(Matcher delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public boolean matches(String value) {
+            return !delegate.matches(value);
+        }
+
+        @Override
+        public String toString() {
+            return "exclude " + delegate.toString();
+        }
+    }
 }
+
