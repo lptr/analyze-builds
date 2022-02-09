@@ -34,42 +34,55 @@ abstract class Matcher {
 
     static class Converter implements CommandLine.ITypeConverter<Matcher> {
         @Override
-        public Matcher convert(String rawValue) {
-            Type type;
-            String value;
-            if (rawValue.startsWith("!")) {
-                type = Type.EXCLUDE;
-                value = rawValue.substring(1);
-            } else {
-                type = Type.INCLUDE;
-                value = rawValue;
-            }
+        public Matcher convert(String value) {
+            return value.startsWith("!")
+                    ? convert(Type.EXCLUDE, value.substring(1))
+                    : convert(Type.INCLUDE, value);
+        }
+
+        private Matcher convert(Type type, String value) {
             if (value.startsWith("/") && value.endsWith("/")) {
-                Pattern pattern = Pattern.compile(value.substring(1, value.length() - 1));
-                return new Matcher(type) {
-
-                    @Override
-                    protected boolean match(String value) {
-                        return pattern.matcher(value).matches();
-                    }
-
-                    @Override
-                    protected String describeValue() {
-                        return "/" + pattern.pattern() + "/";
-                    }
-                };
+                return new RegexMatcher(type, Pattern.compile(value.substring(1, value.length() - 1)));
             } else {
-                return new Matcher(type) {
-                    @Override
-                    protected boolean match(String value) {
-                        return value.equals(value);
-                    }
+                return new ExactMatcher(type, value);
+            }
+        }
 
-                    @Override
-                    protected String describeValue() {
-                        return "'" + value + "'";
-                    }
-                };
+        private static class ExactMatcher extends Matcher {
+            private final String value;
+
+            public ExactMatcher(Type type, String value) {
+                super(type);
+                this.value = value;
+            }
+
+            @Override
+            protected boolean match(String value) {
+                return this.value.equals(value);
+            }
+
+            @Override
+            protected String describeValue() {
+                return "'" + value + "'";
+            }
+        }
+
+        private static class RegexMatcher extends Matcher {
+            private final Pattern pattern;
+
+            public RegexMatcher(Type type, Pattern pattern) {
+                super(type);
+                this.pattern = pattern;
+            }
+
+            @Override
+            protected boolean match(String value) {
+                return pattern.matcher(value).matches();
+            }
+
+            @Override
+            protected String describeValue() {
+                return "/" + pattern.pattern() + "/";
             }
         }
     }
