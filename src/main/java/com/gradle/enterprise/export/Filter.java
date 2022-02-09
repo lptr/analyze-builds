@@ -30,10 +30,6 @@ class Filter {
         return !matchers.isEmpty();
     }
 
-    private static boolean match(Collection<Matcher> patterns, String value) {
-        return patterns.stream().anyMatch(pattern -> pattern.matches(value));
-    }
-
     @Override
     public String toString() {
         if (filters()) {
