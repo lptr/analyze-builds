@@ -30,12 +30,16 @@ import picocli.CommandLine.Option;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.X509TrustManager;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -75,6 +79,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     @Option(names = "--server", paramLabel = "<URL>", required = true, description = "GE server URL", converter = HttpUrlConverter.class)
     private HttpUrl serverUrl;
+
+    @Option(names = "--allow-untrusted", description = "Allow untrusted HTTPS connections")
+    private boolean allowUntrusted;
 
     @Option(names = "--api-key", paramLabel = "<key>", description = "Export API access key, can be set via EXPORT_API_ACCESS_KEY environment variable")
     private String exportApiAccessKey = System.getenv("EXPORT_API_ACCESS_KEY");
@@ -131,14 +138,21 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         if (Strings.isNullOrEmpty(exportApiAccessKey)) {
             throw new RuntimeException("Export API access key must be specified");
         }
-        OkHttpClient httpClient = new OkHttpClient.Builder()
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ZERO)
                 .readTimeout(Duration.ZERO)
                 .retryOnConnectionFailure(true)
                 .connectionPool(new ConnectionPool(maxBuildScansStreamedConcurrently, 30, TimeUnit.SECONDS))
                 .authenticator(Authenticators.bearerToken(exportApiAccessKey))
-                .protocols(ImmutableList.of(Protocol.HTTP_1_1))
-                .build();
+                .protocols(ImmutableList.of(Protocol.HTTP_1_1));
+        if (allowUntrusted) {
+            SSLContext sslContext = SSLContext.getInstance("SSL");
+            X509TrustManager trustManager = new AllTrustingTrustManager();
+            sslContext.init(null, new X509TrustManager[]{trustManager}, new SecureRandom());
+            builder.sslSocketFactory(sslContext.getSocketFactory(), trustManager);
+            builder.hostnameVerifier((hostname, session) -> true);
+        }
+        OkHttpClient httpClient = builder.build();
         httpClient.dispatcher().setMaxRequests(maxBuildScansStreamedConcurrently);
         httpClient.dispatcher().setMaxRequestsPerHost(maxBuildScansStreamedConcurrently);
 
@@ -616,6 +630,21 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 merged.put(key, add.apply(a.getOrDefault(key, zero), b.getOrDefault(key, zero)));
             }
             return merged.build();
+        }
+    }
+
+    private static class AllTrustingTrustManager implements X509TrustManager {
+        @Override
+        public void checkClientTrusted(X509Certificate[] chain, String authType) {
+        }
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] chain, String authType) {
+        }
+
+        @Override
+        public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[]{};
         }
     }
 }
