@@ -21,7 +21,7 @@ class FilterTest extends Specification {
 
     def "singe matcher filters"() {
         def filter = filter(
-                { it.equals("alma") } as Matcher
+            { it.equals("alma") } as Matcher
         )
         expect:
         filter.filters()
@@ -34,8 +34,8 @@ class FilterTest extends Specification {
 
     def "multi matcher filters"() {
         def filter = filter(
-                { it.equals("alma") } as Matcher,
-                { it.equals("korte") } as Matcher
+            { it.equals("alma") } as Matcher,
+            { it.equals("korte") } as Matcher
         )
         expect:
         filter.filters()
