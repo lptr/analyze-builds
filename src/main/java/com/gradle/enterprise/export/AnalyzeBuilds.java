@@ -171,7 +171,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private void processEvents(OkHttpClient httpClient) throws Exception {
-        LOGGER.info("Connecting to GE server at {}{}", serverUrl, allowUntrusted ? " (untrusted)" : "");
+        LOGGER.info("Connecting to GE server at {} ({}connections: {})",
+                serverUrl,
+                allowUntrusted ? "untrusted, " : "",
+                maxBuildScansStreamedConcurrently);
         EventSource.Factory eventSourceFactory = EventSources.createFactory(httpClient);
         Stream<String> buildIds = builds != null ? builds.stream()
                 : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
