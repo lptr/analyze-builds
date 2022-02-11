@@ -179,13 +179,13 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> buildIds = builds != null ? builds.stream()
             : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
             : queryBuildsFromPast(since, until, eventSourceFactory);
-        Filter projectFilter = new Filter(filterProjects);
-        Filter tagFilter = new Filter(filterTags);
-        Filter requestedTaskFilter = new Filter(filterRequestedTasks);
-        Filter taskTypeFilter = new Filter(filterTaskTypes);
-        Filter taskPathFilter = new Filter(filterTaskPaths);
-        Filter logTasksByTypeFilter = new Filter(logTaskTypes);
-        Filter logTasksByPathFilter = new Filter(logTaskPaths);
+        Filter projectFilter = Filter.from(filterProjects);
+        Filter tagFilter = Filter.from(filterTags);
+        Filter requestedTaskFilter = Filter.from(filterRequestedTasks);
+        Filter taskTypeFilter = Filter.from(filterTaskTypes);
+        Filter taskPathFilter = Filter.from(filterTaskPaths);
+        Filter logTasksByTypeFilter = Filter.from(logTaskTypes);
+        Filter logTasksByPathFilter = Filter.from(logTaskPaths);
 
         LOGGER.info("Filtering builds:");
         LOGGER.info(" - by project: {}", projectFilter);
@@ -432,9 +432,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         @Override
         public Result complete() {
             boolean matches = true
-                && projectFilter.matches(rootProjects)
-                && tagFilter.matches(tags)
-                && requestedTaskFilter.matches(requestedTasks);
+                && projectFilter.matchesAny(rootProjects)
+                && tagFilter.matchesAny(tags)
+                && requestedTaskFilter.matchesAny(requestedTasks);
             return new Result(buildId, matches, maxWorkers);
         }
     }
@@ -522,7 +522,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 .forEach(task -> {
                     taskCount.incrementAndGet();
                     add(taskTypeTimes, task.type, task.finishTime - task.startTime);
-                    add(taskPathTimes, task.path, task.finishTime - task.startTime);
+                    add(taskPathTimes, String.format("%s (%s)", task.path, task.type), task.finishTime - task.startTime);
                     add(startStopEvents, task.startTime, 1);
                     add(startStopEvents, task.finishTime, -1);
                 });

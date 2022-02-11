@@ -2,79 +2,90 @@ package com.gradle.enterprise.export;
 
 import picocli.CommandLine;
 
+import java.util.Locale;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
-interface Matcher {
-    boolean matches(String value);
+public abstract class Matcher {
+    enum Match {
+        INCLUDE, EXCLUDE;
+    }
 
-    class Converter implements CommandLine.ITypeConverter<Matcher> {
+    private final Match direction;
+
+    public Matcher(Match direction) {
+        this.direction = direction;
+    }
+
+    Match getDirection() {
+        return direction;
+    }
+
+    public Optional<Match> matches(String value) {
+        return match(value) ? Optional.of(direction) : Optional.empty();
+    }
+
+    @Override
+    public String toString() {
+        return direction.name().toLowerCase(Locale.ROOT) + " " + describeValue();
+    }
+
+    protected abstract boolean match(String value);
+
+    protected abstract String describeValue();
+
+    public static class Converter implements CommandLine.ITypeConverter<Matcher> {
         @Override
         public Matcher convert(String value) {
             return value.startsWith("!")
-                ? new ExcludingMatcher(createMatcher(value.substring(1)))
-                : createMatcher(value);
+                ? createMatcher(value.substring(1), Match.EXCLUDE)
+                : createMatcher(value, Match.INCLUDE);
         }
 
-        private Matcher createMatcher(String value) {
+        private Matcher createMatcher(String value, Match direction) {
             if (value.startsWith("/") && value.endsWith("/")) {
-                return new RegexMatcher(Pattern.compile(value.substring(1, value.length() - 1)));
+                return new RegexMatcher(Pattern.compile(value.substring(1, value.length() - 1)), direction);
             } else {
-                return new ExactMatcher(value);
+                return new ExactMatcher(value, direction);
             }
         }
     }
 
-    class ExactMatcher implements Matcher {
+    static class ExactMatcher extends Matcher {
         private final String value;
 
-        public ExactMatcher(String value) {
+        public ExactMatcher(String value, Match direction) {
+            super(direction);
             this.value = value;
         }
 
         @Override
-        public boolean matches(String value) {
+        protected boolean match(String value) {
             return this.value.equals(value);
         }
 
         @Override
-        public String toString() {
+        protected String describeValue() {
             return "'" + value + "'";
         }
     }
 
-    class RegexMatcher implements Matcher {
+    static class RegexMatcher extends Matcher {
         private final Pattern pattern;
 
-        public RegexMatcher(Pattern pattern) {
+        public RegexMatcher(Pattern pattern, Match direction) {
+            super(direction);
             this.pattern = pattern;
         }
 
         @Override
-        public boolean matches(String value) {
+        protected boolean match(String value) {
             return pattern.matcher(value).matches();
         }
 
         @Override
-        public String toString() {
+        protected String describeValue() {
             return "/" + pattern.pattern() + "/";
-        }
-    }
-
-    class ExcludingMatcher implements Matcher {
-        private final Matcher delegate;
-
-        public ExcludingMatcher(Matcher delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public boolean matches(String value) {
-            return !delegate.matches(value);
-        }
-
-        @Override
-        public String toString() {
-            return "exclude " + delegate.toString();
         }
     }
 }
