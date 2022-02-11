@@ -127,6 +127,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path")
     private List<Matcher> logTaskPaths;
 
+    @Option(names = "--progress", description = "Show progress")
+    private boolean showProgress;
+
     @Option(names = "--verbose", description = "Enable verbose output")
     private boolean verbose;
 
@@ -180,7 +183,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     }
 
     private void processEvents(OkHttpClient httpClient) throws Exception {
-        LOGGER.info("Connecting to GE server at {} ({}connections: {})",
+        LOGGER.info("Connecting to GE server at {} ({}{} concurrent connections)",
             serverUrl,
             allowUntrusted ? "untrusted, " : "",
             maxBuildScansStreamedConcurrently);
@@ -210,6 +213,8 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         for (Filter filter : Arrays.asList(logTasksByTypeFilter, logTasksByPathFilter)) {
             filter.describeWith(AnalyzeBuilds::printFilter);
         }
+
+        AtomicInteger buildCount = new AtomicInteger(0);
 
         BuildStatistics composedStats = buildIds
             .parallel()
@@ -253,6 +258,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                     return future.get();
                 } catch (InterruptedException | ExecutionException e) {
                     throw new RuntimeException(e);
+                } finally {
+                    int currentCount = buildCount.incrementAndGet();
+                    if (showProgress && currentCount % 100 == 0) {
+                        LOGGER.info("Processed {} builds", currentCount);
+                    }
                 }
             })
             .reduce(BuildStatistics::merge)
