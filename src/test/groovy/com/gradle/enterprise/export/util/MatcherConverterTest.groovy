@@ -1,11 +1,12 @@
-package com.gradle.enterprise.export
+package com.gradle.enterprise.export.util
 
+import com.gradle.enterprise.export.Matcher
 import spock.lang.Specification
 
 import static com.gradle.enterprise.export.Matcher.Match.EXCLUDE
 import static com.gradle.enterprise.export.Matcher.Match.INCLUDE
 
-class MatcherTest extends Specification {
+class MatcherConverterTest extends Specification {
 
     def "can match exact string"() {
         def matcher = matcher("alma")
@@ -40,6 +41,6 @@ class MatcherTest extends Specification {
     }
 
     Matcher matcher(String pattern) {
-        new Matcher.Converter().convert(pattern)
+        new MatcherConverter().convert(pattern)
     }
 }

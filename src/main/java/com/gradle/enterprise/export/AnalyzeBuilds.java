@@ -14,6 +14,7 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.gradle.enterprise.export.util.HttpUrlConverter;
 import com.gradle.enterprise.export.util.InstantConverter;
 import com.gradle.enterprise.export.util.ManifestVersionProvider;
+import com.gradle.enterprise.export.util.MatcherConverter;
 import com.gradle.enterprise.export.util.StreamableQueue;
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
@@ -105,25 +106,25 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--query-until", paramLabel = "<time>", description = "Query builds until the given point in time; ignored when --builds or --load-builds-from is specified", converter = InstantConverter.class)
     private Instant until;
 
-    @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project", converter = Matcher.Converter.class)
+    @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project", converter = MatcherConverter.class)
     private List<Matcher> filterProjects;
 
-    @Option(names = "--tag", paramLabel = "<pattern>", description = "Include/exclude builds with a matching tag", converter = Matcher.Converter.class)
+    @Option(names = "--tag", paramLabel = "<pattern>", description = "Include/exclude builds with a matching tag", converter = MatcherConverter.class)
     private List<Matcher> filterTags;
 
-    @Option(names = "--requested-task", paramLabel = "<pattern>", description = "Include/eclude builds with a matching requested task", converter = Matcher.Converter.class)
+    @Option(names = "--requested-task", paramLabel = "<pattern>", description = "Include/eclude builds with a matching requested task", converter = MatcherConverter.class)
     private List<Matcher> filterRequestedTasks;
 
-    @Option(names = "--task-type", paramLabel = "<pattern>", description = "Include/exclude task with matching type", converter = Matcher.Converter.class)
+    @Option(names = "--task-type", paramLabel = "<pattern>", description = "Include/exclude task with matching type", converter = MatcherConverter.class)
     private List<Matcher> filterTaskTypes;
 
-    @Option(names = "--task-path", paramLabel = "<pattern>", description = "Include/exclude task with matchin path", converter = Matcher.Converter.class)
+    @Option(names = "--task-path", paramLabel = "<pattern>", description = "Include/exclude task with matchin path", converter = MatcherConverter.class)
     private List<Matcher> filterTaskPaths;
 
-    @Option(names = "--log-task-type", paramLabel = "<pattern>", description = "Log task with matching type", converter = Matcher.Converter.class)
+    @Option(names = "--log-task-type", paramLabel = "<pattern>", description = "Log task with matching type", converter = MatcherConverter.class)
     private List<Matcher> logTaskTypes;
 
-    @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path", converter = Matcher.Converter.class)
+    @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path", converter = MatcherConverter.class)
     private List<Matcher> logTaskPaths;
 
     @Option(names = "--verbose", description = "Enable verbose output")

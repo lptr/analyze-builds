@@ -1,13 +1,11 @@
 package com.gradle.enterprise.export;
 
-import picocli.CommandLine;
-
 import java.util.Locale;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
 public abstract class Matcher {
-    enum Match {
+    public enum Match {
         INCLUDE, EXCLUDE;
     }
 
@@ -34,24 +32,7 @@ public abstract class Matcher {
 
     protected abstract String describeValue();
 
-    public static class Converter implements CommandLine.ITypeConverter<Matcher> {
-        @Override
-        public Matcher convert(String value) {
-            return value.startsWith("!")
-                ? createMatcher(value.substring(1), Match.EXCLUDE)
-                : createMatcher(value, Match.INCLUDE);
-        }
-
-        private Matcher createMatcher(String value, Match direction) {
-            if (value.startsWith("/") && value.endsWith("/")) {
-                return new RegexMatcher(Pattern.compile(value.substring(1, value.length() - 1)), direction);
-            } else {
-                return new ExactMatcher(value, direction);
-            }
-        }
-    }
-
-    static class ExactMatcher extends Matcher {
+    public static class ExactMatcher extends Matcher {
         private final String value;
 
         public ExactMatcher(String value, Match direction) {
@@ -70,7 +51,7 @@ public abstract class Matcher {
         }
     }
 
-    static class RegexMatcher extends Matcher {
+    public static class RegexMatcher extends Matcher {
         private final Pattern pattern;
 
         public RegexMatcher(Pattern pattern, Match direction) {
