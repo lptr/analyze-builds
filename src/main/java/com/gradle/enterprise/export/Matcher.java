@@ -23,9 +23,9 @@ public abstract class Matcher {
         return match(value) ? Optional.of(direction) : Optional.empty();
     }
 
-    @Override
-    public String toString() {
-        return direction.name().toLowerCase(Locale.ROOT) + " " + describeValue();
+    public String describeAs(String title) {
+        return String.format("%s %s %s",
+            direction.name().toLowerCase(Locale.ROOT), title, describeValue());
     }
 
     protected abstract boolean match(String value);

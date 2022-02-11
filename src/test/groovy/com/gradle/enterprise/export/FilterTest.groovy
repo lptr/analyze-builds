@@ -9,7 +9,7 @@ import static com.gradle.enterprise.export.Matcher.Match.INCLUDE
 
 class FilterTest extends Specification {
     def "null filter matches everything"() {
-        def filter = Filter.from(null)
+        def filter = Filter.create(null)
         expect:
         !filter.filters()
         filter.matches("alma")
@@ -99,6 +99,6 @@ class FilterTest extends Specification {
     }
 
     Filter filter(Matcher... matchers) {
-        return Filter.from(matchers.toList())
+        return Filter.create(matchers.toList())
     }
 }

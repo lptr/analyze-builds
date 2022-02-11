@@ -46,6 +46,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.FormatStyle;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -174,6 +175,10 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         return 0;
     }
 
+    private static void printFilter(String line) {
+        LOGGER.info(" - {}", line);
+    }
+
     private void processEvents(OkHttpClient httpClient) throws Exception {
         LOGGER.info("Connecting to GE server at {} ({}connections: {})",
             serverUrl,
@@ -183,26 +188,28 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         Stream<String> buildIds = builds != null ? builds.stream()
             : buildInputFile != null ? loadBuildsFromFile(buildInputFile)
             : queryBuildsFromPast(since, until, eventSourceFactory);
-        Filter projectFilter = Filter.from(filterProjects);
-        Filter tagFilter = Filter.from(filterTags);
-        Filter requestedTaskFilter = Filter.from(filterRequestedTasks);
-        Filter taskTypeFilter = Filter.from(filterTaskTypes);
-        Filter taskPathFilter = Filter.from(filterTaskPaths);
-        Filter logTasksByTypeFilter = Filter.from(logTaskTypes);
-        Filter logTasksByPathFilter = Filter.from(logTaskPaths);
+        Filter projectFilter = Filter.create("project", filterProjects);
+        Filter tagFilter = Filter.create("tag", filterTags);
+        Filter requestedTaskFilter = Filter.create("requested task", filterRequestedTasks);
+        Filter taskTypeFilter = Filter.create("task type", filterTaskTypes);
+        Filter taskPathFilter = Filter.create("task path", filterTaskPaths);
+        Filter logTasksByTypeFilter = Filter.create("task type", logTaskTypes);
+        Filter logTasksByPathFilter = Filter.create("task path", logTaskPaths);
 
         LOGGER.info("Filtering builds:");
-        LOGGER.info(" - by project: {}", projectFilter);
-        LOGGER.info(" - by tag: {}", tagFilter);
-        LOGGER.info(" - by requested task: {}", requestedTaskFilter);
+        for (Filter filter : Arrays.asList(projectFilter, tagFilter, requestedTaskFilter)) {
+            filter.describeWith(AnalyzeBuilds::printFilter);
+        }
 
         LOGGER.info("Filtering tasks:");
-        LOGGER.info(" - by task type: {}", taskTypeFilter);
-        LOGGER.info(" - by task path: {}", taskPathFilter);
+        for (Filter filter : Arrays.asList(taskTypeFilter, taskPathFilter)) {
+            filter.describeWith(AnalyzeBuilds::printFilter);
+        }
 
         LOGGER.info("Logging tasks:");
-        LOGGER.info(" - by task type: {}", logTasksByTypeFilter);
-        LOGGER.info(" - by task path: {}", logTasksByPathFilter);
+        for (Filter filter : Arrays.asList(logTasksByTypeFilter, logTasksByPathFilter)) {
+            filter.describeWith(AnalyzeBuilds::printFilter);
+        }
 
         BuildStatistics composedStats = buildIds
             .parallel()
