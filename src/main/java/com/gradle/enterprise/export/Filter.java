@@ -19,6 +19,11 @@ interface Filter {
         public boolean filters() {
             return false;
         }
+
+        @Override
+        public String toString() {
+            return "not filtering";
+        }
     };
 
     boolean matches(String element);
