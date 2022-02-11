@@ -11,7 +11,6 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
-import com.gradle.enterprise.export.util.HttpUrlConverter;
 import com.gradle.enterprise.export.util.InstantConverter;
 import com.gradle.enterprise.export.util.ManifestVersionProvider;
 import com.gradle.enterprise.export.util.MatcherConverter;
@@ -79,7 +78,7 @@ import static com.google.common.collect.ImmutableSortedMap.copyOfSorted;
 public final class AnalyzeBuilds implements Callable<Integer> {
     private static final Logger LOGGER = (Logger) LoggerFactory.getLogger(AnalyzeBuilds.class);
 
-    @Option(names = "--server", paramLabel = "<URL>", required = true, description = "GE server URL", converter = HttpUrlConverter.class)
+    @Option(names = "--server", paramLabel = "<URL>", required = true, description = "GE server URL")
     private HttpUrl serverUrl;
 
     @Option(names = "--allow-untrusted", description = "Allow untrusted HTTPS connections")
@@ -100,31 +99,31 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     @Option(names = "--save-builds-to", paramLabel = "<file>", description = "File to save build IDs to")
     private File buildOutputFile;
 
-    @Option(names = "--query-since", paramLabel = "<time>", description = "Query builds since the given point in time; defaults to two hours ago; ignored when --builds or --load-builds-from is specified", converter = InstantConverter.class)
+    @Option(names = "--query-since", paramLabel = "<time>", description = "Query builds since the given point in time; defaults to two hours ago; ignored when --builds or --load-builds-from is specified")
     private Instant since = Instant.now().minus(Duration.ofHours(2));
 
-    @Option(names = "--query-until", paramLabel = "<time>", description = "Query builds until the given point in time; ignored when --builds or --load-builds-from is specified", converter = InstantConverter.class)
+    @Option(names = "--query-until", paramLabel = "<time>", description = "Query builds until the given point in time; ignored when --builds or --load-builds-from is specified")
     private Instant until;
 
-    @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project", converter = MatcherConverter.class)
+    @Option(names = "--project", paramLabel = "<pattern>", description = "Include/exclude builds with a matching root project")
     private List<Matcher> filterProjects;
 
-    @Option(names = "--tag", paramLabel = "<pattern>", description = "Include/exclude builds with a matching tag", converter = MatcherConverter.class)
+    @Option(names = "--tag", paramLabel = "<pattern>", description = "Include/exclude builds with a matching tag")
     private List<Matcher> filterTags;
 
-    @Option(names = "--requested-task", paramLabel = "<pattern>", description = "Include/eclude builds with a matching requested task", converter = MatcherConverter.class)
+    @Option(names = "--requested-task", paramLabel = "<pattern>", description = "Include/eclude builds with a matching requested task")
     private List<Matcher> filterRequestedTasks;
 
-    @Option(names = "--task-type", paramLabel = "<pattern>", description = "Include/exclude task with matching type", converter = MatcherConverter.class)
+    @Option(names = "--task-type", paramLabel = "<pattern>", description = "Include/exclude task with matching type")
     private List<Matcher> filterTaskTypes;
 
-    @Option(names = "--task-path", paramLabel = "<pattern>", description = "Include/exclude task with matchin path", converter = MatcherConverter.class)
+    @Option(names = "--task-path", paramLabel = "<pattern>", description = "Include/exclude task with matchin path")
     private List<Matcher> filterTaskPaths;
 
-    @Option(names = "--log-task-type", paramLabel = "<pattern>", description = "Log task with matching type", converter = MatcherConverter.class)
+    @Option(names = "--log-task-type", paramLabel = "<pattern>", description = "Log task with matching type")
     private List<Matcher> logTaskTypes;
 
-    @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path", converter = MatcherConverter.class)
+    @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path")
     private List<Matcher> logTaskPaths;
 
     @Option(names = "--verbose", description = "Enable verbose output")
@@ -133,7 +132,11 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) {
-        int exitCode = new CommandLine(new AnalyzeBuilds()).execute(args);
+        int exitCode = new CommandLine(new AnalyzeBuilds())
+            .registerConverter(HttpUrl.class, HttpUrl::parse)
+            .registerConverter(Matcher.class, new MatcherConverter())
+            .registerConverter(Instant.class, new InstantConverter())
+            .execute(args);
         System.exit(exitCode);
     }
 
