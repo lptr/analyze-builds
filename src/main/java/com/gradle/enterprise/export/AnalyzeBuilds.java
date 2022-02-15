@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
@@ -126,6 +127,9 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
     @Option(names = "--log-task-path", paramLabel = "<pattern>", description = "Log task with matching path")
     private List<Matcher> logTaskPaths;
+
+    @Option(names = "--limit", paramLabel = "<n>", description = "Limit results to the top <n> results")
+    private Integer limit;
 
     @Option(names = "--progress", description = "Show progress")
     private boolean showProgress;
@@ -268,7 +272,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             .reduce(BuildStatistics::merge)
             .orElse(BuildStatistics.EMPTY);
 
-        composedStats.print();
+        composedStats.print(limit);
 
         if (buildOutputFile != null) {
             LOGGER.info("Storing build IDs in {}", buildOutputFile);
@@ -588,7 +592,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
             }
 
             @Override
-            public void print() {
+            public void print(@Nullable Integer limit) {
                 LOGGER.warn("No matching builds found");
             }
 
@@ -600,7 +604,7 @@ public final class AnalyzeBuilds implements Callable<Integer> {
 
         List<String> getBuildIds();
 
-        void print();
+        void print(@Nullable Integer limit);
 
         BuildStatistics merge(BuildStatistics other);
     }
@@ -608,16 +612,16 @@ public final class AnalyzeBuilds implements Callable<Integer> {
     private static class DefaultBuildStatistics implements BuildStatistics {
         private final ImmutableList<String> buildIds;
         private final int taskCount;
-        private final ImmutableSortedMap<String, Long> taskTypeTimes;
-        private final ImmutableSortedMap<String, Long> taskPathTimes;
+        private final ImmutableMap<String, Long> taskTypeTimes;
+        private final ImmutableMap<String, Long> taskPathTimes;
         private final ImmutableSortedMap<Integer, Long> workerTimes;
         private final ImmutableSortedMap<Integer, Integer> maxWorkers;
 
         public DefaultBuildStatistics(
             ImmutableList<String> buildIds,
             int taskCount,
-            ImmutableSortedMap<String, Long> taskTypeTimes,
-            ImmutableSortedMap<String, Long> taskPathTimes,
+            ImmutableMap<String, Long> taskTypeTimes,
+            ImmutableMap<String, Long> taskPathTimes,
             ImmutableSortedMap<Integer, Long> workerTimes,
             ImmutableSortedMap<Integer, Integer> maxWorkers
         ) {
@@ -635,8 +639,31 @@ public final class AnalyzeBuilds implements Callable<Integer> {
         }
 
         @Override
-        public void print() {
+        public void print(@Nullable Integer limit) {
             LOGGER.info("Statistics for {} builds matching criteria with {} tasks", buildIds.size(), taskCount);
+
+            long wallClockBuildType = workerTimes.values().stream()
+                .reduce(0L, Long::sum);
+            long cumulativeBuildTimeByWorkerTimes = workerTimes.entrySet().stream()
+                .map(entry -> entry.getKey() * entry.getValue())
+                .reduce(0L, Long::sum);
+            long cumulativeBuildTimeByTaskTypes = taskTypeTimes.values().stream()
+                .reduce(0L, Long::sum);
+            long cumulativeBuildTimeByTaskPaths = taskPathTimes.values().stream()
+                .reduce(0L, Long::sum);
+            if (cumulativeBuildTimeByWorkerTimes != cumulativeBuildTimeByTaskPaths || cumulativeBuildTimeByTaskPaths != cumulativeBuildTimeByTaskTypes) {
+                LOGGER.error("Total cumulative build times differ: {} ms (by worker tiems), {} ms (my task types), {} ms (by task paths)",
+                    cumulativeBuildTimeByWorkerTimes,
+                    cumulativeBuildTimeByTaskTypes,
+                    cumulativeBuildTimeByTaskPaths
+                );
+            }
+
+            LOGGER.info("Total build time: {} ms (wall-clock), {} ms (cumulative) ({}% parallelizable)",
+                wallClockBuildType,
+                cumulativeBuildTimeByWorkerTimes,
+                Math.round(((double) cumulativeBuildTimeByWorkerTimes / wallClockBuildType - 1) * 10000) / 100d
+            );
 
             LOGGER.info("");
             LOGGER.info("Wall-clock time spent running n tasks concurrently:");
@@ -644,19 +671,33 @@ public final class AnalyzeBuilds implements Callable<Integer> {
                 LOGGER.info("{}: {} ms", concurrencyLevel, workerTimes.getOrDefault(concurrencyLevel, 0L));
             }
 
-            LOGGER.info("");
-            LOGGER.info("Cumlative build time broken down by task type:");
-            taskTypeTimes.forEach((taskType, count) -> LOGGER.info("{}: {} ms", taskType, count));
+            String limitDescription = limit == null
+                ? ""
+                : " for the top " + limit + " entries";
 
             LOGGER.info("");
-            LOGGER.info("Cumlative build time broken down by task path:");
-            taskPathTimes.forEach((taskPath, count) -> LOGGER.info("{}: {} ms", taskPath, count));
+            LOGGER.info("Cumlative build time broken down by task type{}:", limitDescription);
+            getTop(taskTypeTimes, limit).forEach((taskType, count) -> LOGGER.info("{}: {} ms", taskType, count));
+
+            LOGGER.info("");
+            LOGGER.info("Cumlative build time broken down by task path{}:", limitDescription);
+            getTop(taskPathTimes, limit).forEach((taskPath, count) -> LOGGER.info("{}: {} ms", taskPath, count));
 
             LOGGER.info("");
             LOGGER.info("Max workers:");
             for (int maxWorker = 1; maxWorker <= maxWorkers.lastKey(); maxWorker++) {
                 LOGGER.info("{}: {} builds", maxWorker, maxWorkers.getOrDefault(maxWorker, 0));
             }
+        }
+
+        private static ImmutableMap<String, Long> getTop(ImmutableMap<String, Long> times, @Nullable Integer limit) {
+            if (limit == null) {
+                return times;
+            }
+            return times.entrySet().stream()
+                .sorted((a, b) -> (int) (b.getValue() - a.getValue()))
+                .limit(limit)
+                .collect(ImmutableMap.toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
         @Override
